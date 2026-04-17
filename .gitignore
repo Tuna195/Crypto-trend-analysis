@@ -1,0 +1,27 @@
+# --- Python & Spark ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+metastore_db/
+derby.log
+
+# --- Node.js & Frontend ---
+node_modules/
+dist/
+build/
+.env
+
+# --- Data & Machine Learning ---
+data/
+*.csv
+*.json
+*.parquet
+*.h5
+*.pkl
+
+# --- IDE & OS ---
+.idea/
+.vscode/
+.DS_Store
