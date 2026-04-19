@@ -20,7 +20,7 @@ class MongoStorageError(RuntimeError):
 class MongoConfig:
     """Configuration for MongoDB access."""
 
-    uri: str = os.getenv("MONGO_URI", "mongodb+srv://tranduonganttcole_db_user:KrHMQZxRZlRAsA3B@cluster0.rrajasg.mongodb.net/?appName=Cluster0")
+    uri: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
     database: str = os.getenv("MONGO_DB", "crypto_trends")
 
 
