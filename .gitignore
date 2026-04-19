@@ -26,5 +26,8 @@ data/
 .vscode/
 .DS_Store
 
-
+# --- Kafka ---
+certs/
+*.json
+*.log
 /test_storage.py
