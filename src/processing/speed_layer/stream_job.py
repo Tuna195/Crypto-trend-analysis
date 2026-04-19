@@ -40,6 +40,7 @@ DEFAULT_SAMPLE_PATH = (
 @dataclass
 class CleanTweet:
     tweet_id: str
+    user_id: str
     created_at: datetime
     username: str
     content: str
@@ -120,8 +121,11 @@ def parse_json_line(line: str) -> dict[str, Any] | None:
 
 def clean_tweet(record: dict[str, Any]) -> CleanTweet | None:
     tweet_id = normalize_text(record.get("tweet_id"))
+    user_id = normalize_text(record.get("user_id")) or normalize_text(record.get("author_id"))
     created_at = parse_iso_datetime(record.get("created_at"))
     username = normalize_text(record.get("username")) or "unknown"
+    if not user_id:
+        user_id = username
     content = normalize_text(record.get("content"))
 
     hashtags = ensure_list(record.get("hashtags"))
@@ -139,6 +143,7 @@ def clean_tweet(record: dict[str, Any]) -> CleanTweet | None:
 
     return CleanTweet(
         tweet_id=tweet_id,
+        user_id=user_id,
         created_at=created_at,
         username=username,
         content=content,
@@ -176,7 +181,7 @@ def aggregate_trends(tweets: Iterable[CleanTweet]) -> list[dict[str, Any]]:
             metric = metrics[symbol]
             metric["mention_count"] += 1
             metric["engagement_score"] += tweet.engagement_score
-            metric["authors"].add(tweet.username)
+            metric["authors"].add(tweet.user_id)
             if metric["last_seen"] is None or tweet.created_at > metric["last_seen"]:
                 metric["last_seen"] = tweet.created_at
 
@@ -230,6 +235,7 @@ def run_demo(sample_path: Path) -> int:
             json.dumps(
                 {
                     "tweet_id": tweet.tweet_id,
+                    "user_id": tweet.user_id,
                     "created_at": tweet.created_at.isoformat(),
                     "username": tweet.username,
                     "cashtags": tweet.cashtags,
@@ -255,6 +261,8 @@ def get_tweet_schema() -> Any:
     return T.StructType(
         [
             T.StructField("tweet_id", T.StringType(), True),
+            T.StructField("user_id", T.StringType(), True),
+            T.StructField("author_id", T.StringType(), True),
             T.StructField("created_at", T.StringType(), True),
             T.StructField("username", T.StringType(), True),
             T.StructField("content", T.StringType(), True),
@@ -305,9 +313,13 @@ def transform_stream(raw_df: DataFrame) -> DataFrame:
 
     cleaned = (
         parsed.withColumn("content", F.trim(F.regexp_replace(F.col("content"), r"\s+", " ")))
+        .withColumn(
+            "user_id",
+            F.coalesce(F.col("user_id"), F.col("author_id"), F.col("username"), F.lit("unknown")),
+        )
         .withColumn("username", F.coalesce(F.col("username"), F.lit("unknown")))
         .withColumn("lang", F.lower(F.coalesce(F.col("lang"), F.lit("und"))))
-        .withColumn("event_time", F.to_timestamp("created_at"))
+        .withColumn("event_time", F.try_to_timestamp("created_at"))
         .withColumn(
             "like_count",
             F.coalesce(F.col("like_count"), F.lit(0)),
@@ -350,7 +362,7 @@ def transform_stream(raw_df: DataFrame) -> DataFrame:
         )
         .agg(
             F.count("*").alias("mention_count"),
-            F.countDistinct("username").alias("unique_authors"),
+            F.countDistinct("user_id").alias("unique_authors"),
             F.sum("engagement_score").alias("engagement_score"),
             F.max("event_time").alias("last_seen"),
         )
