@@ -25,3 +25,8 @@ data/
 .idea/
 .vscode/
 .DS_Store
+
+# --- Kafka ---
+certs/
+*.json
+*.log
