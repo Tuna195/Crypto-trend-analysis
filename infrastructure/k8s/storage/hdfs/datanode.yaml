@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: datanode
+  namespace: crypto-trend
+spec:
+  selector:
+    app: datanode
+  ports:
+    - name: web
+      port: 9864
+      targetPort: 9864
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: datanode
+  namespace: crypto-trend
+spec:
+  serviceName: datanode
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datanode
+  template:
+    metadata:
+      labels:
+        app: datanode
+    spec:
+      containers:
+        - name: datanode
+          image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: hdfs-config
+          env:
+            - name: SERVICE_PRECONDITION
+              value: namenode:9870
+          ports:
+            - containerPort: 9864
+              name: web
+          volumeMounts:
+            - name: datanode-data
+              mountPath: /hadoop/dfs/data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9864
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9864
+            initialDelaySeconds: 45
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: datanode-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 40Gi

@@ -25,3 +25,6 @@ data/
 .idea/
 .vscode/
 .DS_Store
+
+
+/test_storage.py
