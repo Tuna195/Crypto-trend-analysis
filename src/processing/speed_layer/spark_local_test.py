@@ -16,6 +16,7 @@ def main() -> None:
 
     cleaned = (
         df.withColumn("event_time", F.try_to_timestamp("created_at"))
+        .withColumn("user_id", F.coalesce(F.col("user_id"), F.col("username"), F.lit("unknown")))
         .withColumn("username", F.coalesce(F.col("username"), F.lit("unknown")))
         .withColumn("like_count", F.coalesce(F.col("like_count").cast("int"), F.lit(0)))
         .withColumn(
@@ -32,13 +33,14 @@ def main() -> None:
         .filter(F.size(F.col("cashtags")) > 0)
         .dropDuplicates(["tweet_id"])
         .withColumn("symbol", F.explode("cashtags"))
+        .withColumn("symbol", F.upper(F.col("symbol")))
     )
 
     result = (
         cleaned.groupBy("symbol")
         .agg(
             F.count("*").alias("mention_count"),
-            F.countDistinct("username").alias("unique_authors"),
+            F.countDistinct("user_id").alias("unique_authors"),
             F.sum("engagement_score").alias("engagement_score"),
             F.max("event_time").alias("last_seen"),
         )
@@ -55,11 +57,12 @@ def main() -> None:
     )
 
     print("=== Raw Input ===")
-    df.select("tweet_id", "created_at", "content", "cashtags").show(truncate=False)
+    df.select("tweet_id", "user_id", "created_at", "content", "cashtags").show(truncate=False)
 
     print("=== Cleaned Stream ===")
     cleaned.select(
         "tweet_id",
+        "user_id",
         "event_time",
         "username",
         "symbol",
