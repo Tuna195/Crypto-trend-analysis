@@ -58,17 +58,15 @@ def build_stream(input_dir: Path):
         .filter(F.col("event_time").isNotNull())
         .filter(F.col("content").isNotNull())
         .filter(F.size(F.col("cashtags")) > 0)
-        .withWatermark("event_time", "2 minutes")
-        .dropDuplicates(["tweet_id"])
         .withColumn("symbol", F.explode("cashtags"))
         .withColumn("symbol", F.upper(F.col("symbol")))
     )
 
     trends = (
-        cleaned.groupBy(F.window("event_time", "1 minute"), F.col("symbol"))
+        cleaned.groupBy("symbol")
         .agg(
             F.count("*").alias("mention_count"),
-            F.countDistinct("user_id").alias("unique_authors"),
+            F.approx_count_distinct("user_id").alias("unique_authors"),
             F.sum("engagement_score").alias("engagement_score"),
             F.max("event_time").alias("last_seen"),
         )
@@ -82,8 +80,6 @@ def build_stream(input_dir: Path):
             ),
         )
         .select(
-            F.col("window.start").alias("window_start"),
-            F.col("window.end").alias("window_end"),
             "symbol",
             "mention_count",
             "unique_authors",
@@ -108,7 +104,7 @@ def main() -> None:
     spark, trends = build_stream(args.input_dir)
 
     query = (
-        trends.writeStream.outputMode("update")
+        trends.writeStream.outputMode("complete")
         .format("console")
         .option("truncate", False)
         .option("numRows", 30)

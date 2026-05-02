@@ -30,4 +30,5 @@ data/
 certs/
 *.json
 *.log
+*.log
 /test_storage.py
