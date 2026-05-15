@@ -1,18 +1,9 @@
 import time
-import os
-import requests
-from dotenv import load_dotenv
 from collections import deque
 
 from kafka_connection import get_kafka_producer
+from api_helper import fetch_tweets_with_fallback
 from logger import get_logger
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(current_dir, '../../.env')
-load_dotenv(dotenv_path=env_path, override=True)
-
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST")
 
 KAFKA_TOPIC = "raw-tweets-whales"
 
@@ -27,28 +18,25 @@ def fetch_and_produce():
     if not producer:
         return 
 
-    # Lấy dữ liệu trong vòng 3 giờ qua (10800 giây)
+    # Lấy dữ liệu trong vòng 3 giờ qua
     hien_tai = int(time.time())
-    thoi_gian_truoc = hien_tai - 43200 
+    thoi_gian_truoc = hien_tai - 10800 
     
-    # Gom các cá voi vào chung 1 câu lệnh Advanced Search
-    cau_lenh = f"(from:elonmusk OR from:saylor OR from:VitalikButerin) -filter:replies since_time:{thoi_gian_truoc} until_time:{hien_tai}"
+    # Gom 8 Cá Voi Siêu Cấp vào chung 1 câu lệnh Advanced Search
+    cau_lenh = f"(from:elonmusk OR from:saylor OR from:VitalikButerin OR from:cz_binance OR from:brian_armstrong OR from:justinsuntron OR from:CryptoKaleo OR from:Pentosh1) -filter:replies since_time:{thoi_gian_truoc} until_time:{hien_tai}"
     
-    url = f"https://{RAPIDAPI_HOST}/search.php"
-    headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
     querystring = {"query": cau_lenh, "search_type": "Latest"}
     
-    logger.info(f"\n--- Đang quét mục tiêu VIP (Pseudo-Streaming) ---")
+    logger.info(f"\n--- Đang quét 8 MỤC TIÊU VIP (Pseudo-Streaming) ---")
     logger.info(f"Query: {cau_lenh}")
     total_count = 0
     
     try:
-        response = requests.get(url, headers=headers, params=querystring)
-        if response.status_code != 200:
-            logger.error(f"[LỖI API] Trạng thái {response.status_code}: {response.text}")
+        # Sử dụng thuật toán Bắn tỉa dự phòng
+        data = fetch_tweets_with_fallback(querystring, logger)
+        if not data:
             return
             
-        data = response.json()
         tweets = data.get('timeline') or data.get('data') or data.get('results') or data.get('tweets', [])
         
         if not tweets or not isinstance(tweets, list):
