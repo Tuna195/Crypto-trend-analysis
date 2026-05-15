@@ -1,18 +1,9 @@
 import time
-import os
-import requests
-from dotenv import load_dotenv
+from collections import deque
 
 from kafka_connection import get_kafka_producer
+from api_helper import fetch_tweets_with_fallback
 from logger import get_logger
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(current_dir, '../../.env')
-load_dotenv(dotenv_path=env_path, override=True)
-
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST")
-from collections import deque
 
 KAFKA_TOPIC = "raw-tweets-market"
 
@@ -28,33 +19,28 @@ def fetch_and_produce():
     if not producer:
         return 
 
-    # 1. Tính toán mốc thời gian (UNIX Timestamp)
+    # 1. Tính toán mốc thời gian
     # Lấy dữ liệu trong vòng 60 phút vừa qua (3600 giây)
     hien_tai = int(time.time())
     thoi_gian_truoc = hien_tai - 3600 
     
-    # 2. Xây dựng câu lệnh Advanced Search hoàn hảo
-    # Gom 3 đồng coin, loại bỏ reply, chỉ lấy tiếng Anh, lọc theo mốc thời gian
-    cau_lenh = f"($BTC OR $ETH OR $SOL) -filter:replies lang:en since_time:{thoi_gian_truoc} until_time:{hien_tai}"
+    # 2. Xây dựng câu lệnh Advanced Search hoàn hảo (Đã mở rộng lên 8 đồng TOP Coin)
+    cau_lenh = f"($BTC OR $ETH OR $SOL OR $XRP OR $ADA OR $BNB OR $DOGE OR $AVAX) -filter:replies lang:en since_time:{thoi_gian_truoc} until_time:{hien_tai}"
     
-    # 3. Thông số API mới (Tùy thuộc API bạn chọn trên RapidAPI, sửa lại cho đúng)
-    url = f"https://{RAPIDAPI_HOST}/search.php" # Hoặc /twitter/search
-    headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
+    # 3. Thông số API
     querystring = {"query": cau_lenh, "search_type": "Latest"}
     
-    logger.info(f"\n--- Đang quét thị trường (Pseudo-Streaming) ---")
+    logger.info(f"\n--- Đang quét thị trường 8 ĐỒNG COIN (Pseudo-Streaming) ---")
     logger.info(f"Query: {cau_lenh}")
     total_count = 0
     
     try:
-        response = requests.get(url, headers=headers, params=querystring)
-        if response.status_code != 200:
-            logger.error(f"[LỖI API] Trạng thái {response.status_code}: {response.text}")
-            return
-            
-        data = response.json()
+        # Sử dụng thuật toán Bắn tỉa dự phòng 5 Keys thay vì Requests.get chay
+        data = fetch_tweets_with_fallback(querystring, logger)
+        if not data:
+            return # Dừng nếu toàn bộ 5 key đều tạch
         
-        # API trả về danh sách bài viết nằm trong key 'timeline' (theo test_request.json)
+        # API trả về danh sách bài viết nằm trong key 'timeline'
         tweets = data.get('timeline') or data.get('data') or data.get('results') or data.get('tweets', [])
         
         if not tweets or not isinstance(tweets, list):
@@ -66,7 +52,7 @@ def fetch_and_produce():
             if item.get("type") != "tweet" and "tweet_id" not in item:
                 continue
 
-            # Lấy ID của bài viết (Trong JSON mẫu là "tweet_id")
+            # Lấy ID của bài viết
             tweet_id = str(item.get("tweet_id") or item.get("id_str") or item.get("id", ""))
             
             # Khử trùng lặp
