@@ -32,3 +32,4 @@ certs/
 *.log
 *.log
 /test_storage.py
+minikube-linux-amd64
