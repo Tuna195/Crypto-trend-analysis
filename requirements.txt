@@ -33,3 +33,4 @@ pillow>=10.0.0
 
 tqdm==4.67.3
 rich==13.9.4
+schedule==1.2.1
