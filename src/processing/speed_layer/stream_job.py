@@ -45,6 +45,9 @@ DEFAULT_SAMPLE_PATH = (
 DEFAULT_CHECKPOINT_LOCATION = "/tmp/crypto_trend_kafka_checkpoint"
 DEFAULT_TOPICS = "raw-tweets-market,raw-tweets-whales"
 WHALE_AUTHORS = {"elonmusk", "saylor", "vitalikbuterin", "whale_alert"}
+SPIKE_BASELINE_WINDOWS = 6
+SPIKE_MIN_MENTION_COUNT = 10
+SPIKE_GROWTH_RATE_THRESHOLD = 3.0
 
 
 @dataclass
@@ -525,7 +528,7 @@ def build_stream_outputs(raw_df: SparkDataFrame) -> tuple[SparkDataFrame, SparkD
         .withColumn("symbol", F.upper(F.col("symbol")))
     )
 
-    return (
+    trend_metrics = (
         cleaned.groupBy(
             F.window("event_time", "5 minutes", "1 minute"),
             F.col("symbol"),
@@ -579,10 +582,67 @@ def serialize_row(row: Any) -> dict[str, Any]:
     return row.asDict(recursive=True)
 
 
+def calculate_spike_fields(
+    mention_count: Any,
+    baseline_mention_count: Any,
+    min_mention_count: int = SPIKE_MIN_MENTION_COUNT,
+    growth_rate_threshold: float = SPIKE_GROWTH_RATE_THRESHOLD,
+) -> dict[str, Any]:
+    current_mentions = parse_int(mention_count)
+    baseline_mentions = max(parse_float(baseline_mention_count, default=0.0), 0.0)
+    growth_rate = current_mentions / max(baseline_mentions, 1.0)
+
+    return {
+        "baseline_mention_count": round(baseline_mentions, 2),
+        "growth_rate": round(growth_rate, 2),
+        "is_spike": current_mentions >= min_mention_count
+        and growth_rate >= growth_rate_threshold,
+    }
+
+
+def fetch_baseline_mention_count(
+    collection: Any,
+    symbol: str,
+    window_end: Any,
+    limit: int = SPIKE_BASELINE_WINDOWS,
+) -> float:
+    if not symbol or window_end is None:
+        return 0.0
+
+    cursor = (
+        collection.find(
+            {"symbol": symbol, "window_end": {"$lt": window_end}},
+            {"mention_count": 1},
+        )
+        .sort("window_end", -1)
+        .limit(limit)
+    )
+    mention_counts = [parse_int(row.get("mention_count")) for row in cursor]
+    if not mention_counts:
+        return 0.0
+    return round(sum(mention_counts) / len(mention_counts), 2)
+
+
+def enrich_trend_document_with_spike(document: dict[str, Any], collection: Any) -> dict[str, Any]:
+    if "symbol" not in document or "mention_count" not in document:
+        return document
+
+    baseline_mentions = fetch_baseline_mention_count(
+        collection,
+        document["symbol"],
+        document.get("window_end"),
+    )
+    return {
+        **document,
+        **calculate_spike_fields(document["mention_count"], baseline_mentions),
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+
 def write_batch_to_mongo(
     batch_df: SparkDataFrame, _: int, collection_name: str, mongo_uri: str, mongo_db: str
 ) -> None:
-    from pymongo import MongoClient
+    from pymongo import MongoClient, UpdateOne
 
     documents = [serialize_row(row) for row in batch_df.toLocalIterator()]
     if not documents:
@@ -590,7 +650,30 @@ def write_batch_to_mongo(
 
     client = MongoClient(mongo_uri)
     try:
-        client[mongo_db][collection_name].insert_many(documents)
+        collection = client[mongo_db][collection_name]
+        trend_updates = []
+        plain_inserts = []
+        for document in documents:
+            enriched_document = enrich_trend_document_with_spike(document, collection)
+            if all(key in enriched_document for key in ("symbol", "window_start", "window_end")):
+                trend_updates.append(
+                    UpdateOne(
+                        {
+                            "symbol": enriched_document["symbol"],
+                            "window_start": enriched_document["window_start"],
+                            "window_end": enriched_document["window_end"],
+                        },
+                        {"$set": enriched_document},
+                        upsert=True,
+                    )
+                )
+            else:
+                plain_inserts.append(enriched_document)
+
+        if trend_updates:
+            collection.bulk_write(trend_updates, ordered=False)
+        if plain_inserts:
+            collection.insert_many(plain_inserts)
     finally:
         client.close()
 

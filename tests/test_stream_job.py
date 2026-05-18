@@ -13,6 +13,29 @@ sys.path.insert(0, str(PROJECT_ROOT / "src" / "processing" / "speed_layer"))
 import stream_job
 
 
+class FakeMongoCursor:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+
+    def sort(self, *_args) -> "FakeMongoCursor":
+        return self
+
+    def limit(self, limit: int) -> list[dict]:
+        return self.rows[:limit]
+
+
+class FakeMongoCollection:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.last_query = None
+        self.last_projection = None
+
+    def find(self, query: dict, projection: dict) -> FakeMongoCursor:
+        self.last_query = query
+        self.last_projection = projection
+        return FakeMongoCursor(self.rows)
+
+
 class StreamJobTest(unittest.TestCase):
     def test_clean_tweet_accepts_friend_kafka_schema(self) -> None:
         tweet = stream_job.clean_tweet(
@@ -87,6 +110,41 @@ class StreamJobTest(unittest.TestCase):
         self.assertEqual(options["kafka.ssl.keystore.type"], "PEM")
         self.assertEqual(options["kafka.ssl.keystore.certificate.chain"], "CLIENT CERT")
         self.assertEqual(options["kafka.ssl.keystore.key"], "CLIENT KEY")
+
+    def test_calculate_spike_fields_marks_large_growth_as_spike(self) -> None:
+        fields = stream_job.calculate_spike_fields(35, 3.5)
+
+        self.assertEqual(fields["baseline_mention_count"], 3.5)
+        self.assertEqual(fields["growth_rate"], 10.0)
+        self.assertTrue(fields["is_spike"])
+
+    def test_calculate_spike_fields_requires_minimum_mentions(self) -> None:
+        fields = stream_job.calculate_spike_fields(4, 1)
+
+        self.assertEqual(fields["growth_rate"], 4.0)
+        self.assertFalse(fields["is_spike"])
+
+    def test_fetch_baseline_mention_count_averages_recent_windows(self) -> None:
+        collection = FakeMongoCollection(
+            [
+                {"mention_count": 3},
+                {"mention_count": 4},
+                {"mention_count": 5},
+            ]
+        )
+
+        baseline = stream_job.fetch_baseline_mention_count(
+            collection,
+            "DOGE",
+            "2026-04-18T08:05:00Z",
+        )
+
+        self.assertEqual(baseline, 4.0)
+        self.assertEqual(
+            collection.last_query,
+            {"symbol": "DOGE", "window_end": {"$lt": "2026-04-18T08:05:00Z"}},
+        )
+        self.assertEqual(collection.last_projection, {"mention_count": 1})
 
 
 if __name__ == "__main__":
