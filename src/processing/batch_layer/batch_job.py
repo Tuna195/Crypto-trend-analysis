@@ -47,7 +47,6 @@ log = logging.getLogger("batch_job")
 # SHARED HELPERS
 
 def classify_sentiment(score: float) -> str:
-    """Map VADER compound score → bullish / neutral / bearish."""
     if score >= BULLISH_THRESHOLD:
         return "bullish"
     if score <= BEARISH_THRESHOLD:
@@ -113,7 +112,7 @@ def run_demo(args: argparse.Namespace) -> int:
     log.info("Loaded %d raw tweets from %s", len(raw_tweets), sample_path)
 
     # Stage 2: Bot/spam filter
-    bot_filter   = BotSpamFilter(spam_threshold=0.6, bot_threshold=0.5)
+    bot_filter   = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
     clean_tweets: list[dict[str, Any]] = []
     spam_tweets:  list[dict[str, Any]] = []
 
@@ -276,7 +275,7 @@ def _filter_udf():
     ])
 
     def _fn(content, username, eng, weight):
-        f = BotSpamFilter(spam_threshold=0.6, bot_threshold=0.5)
+        f = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
         r = f.detect_spam(
             content or "",
             username=username,
