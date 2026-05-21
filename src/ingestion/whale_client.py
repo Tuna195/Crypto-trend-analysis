@@ -1,3 +1,4 @@
+import os
 import time
 from collections import deque
 
@@ -5,7 +6,7 @@ from kafka_connection import get_kafka_producer
 from api_helper import fetch_tweets_with_fallback
 from logger import get_logger
 
-KAFKA_TOPIC = "raw-tweets-whales"
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC_WHALES", "raw-tweets-whales")
 
 # Khởi tạo logger
 logger = get_logger("Whale_Bot")
@@ -22,12 +23,19 @@ def fetch_and_produce():
     hien_tai = int(time.time())
     thoi_gian_truoc = hien_tai - 10800 
     
-    # Gom 8 Cá Voi Siêu Cấp vào chung 1 câu lệnh Advanced Search
-    cau_lenh = f"(from:elonmusk OR from:saylor OR from:VitalikButerin OR from:cz_binance OR from:brian_armstrong OR from:justinsuntron OR from:CryptoKaleo OR from:Pentosh1) -filter:replies since_time:{thoi_gian_truoc} until_time:{hien_tai}"
+    # Gom các Cá Voi vào chung 1 câu lệnh Advanced Search (Đọc từ môi trường)
+    whales_raw = os.getenv("TRACKED_WHALES")
+    if whales_raw:
+        whales = [w.strip() for w in whales_raw.split(",") if w.strip()]
+    else:
+        whales = ["elonmusk", "saylor", "VitalikButerin", "cz_binance", "brian_armstrong", "justinsuntron", "CryptoKaleo", "Pentosh1"]
+        
+    whales_query = " OR ".join([f"from:{w}" for w in whales])
+    cau_lenh = f"({whales_query}) -filter:replies since_time:{thoi_gian_truoc} until_time:{hien_tai}"
     
     querystring = {"query": cau_lenh, "search_type": "Latest"}
     
-    logger.info(f"\n--- Đang quét 8 MỤC TIÊU VIP (Pseudo-Streaming) ---")
+    logger.info(f"\n--- Đang quét {len(whales)} MỤC TIÊU VIP (Pseudo-Streaming) ---")
     logger.info(f"Query: {cau_lenh}")
     total_count = 0
     

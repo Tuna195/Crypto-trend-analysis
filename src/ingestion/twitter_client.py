@@ -1,3 +1,4 @@
+import os
 import time
 from collections import deque
 
@@ -5,7 +6,7 @@ from kafka_connection import get_kafka_producer
 from api_helper import fetch_tweets_with_fallback
 from logger import get_logger
 
-KAFKA_TOPIC = "raw-tweets-market"
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC_MARKET", "raw-tweets-market")
 
 # Khởi tạo logger
 logger = get_logger("Market_Bot")
@@ -24,13 +25,20 @@ def fetch_and_produce():
     hien_tai = int(time.time())
     thoi_gian_truoc = hien_tai - 3600 
     
-    # 2. Xây dựng câu lệnh Advanced Search hoàn hảo (Đã mở rộng lên 8 đồng TOP Coin)
-    cau_lenh = f"($BTC OR $ETH OR $SOL OR $XRP OR $ADA OR $BNB OR $DOGE OR $AVAX) -filter:replies lang:en since_time:{thoi_gian_truoc} until_time:{hien_tai}"
+    # 2. Xây dựng câu lệnh Advanced Search hoàn hảo (Đã mở rộng cấu hình biến môi trường)
+    coins_raw = os.getenv("TRACKED_COINS")
+    if coins_raw:
+        coins = [c.strip() for c in coins_raw.split(",") if c.strip()]
+    else:
+        coins = ["BTC", "ETH", "SOL", "XRP", "ADA", "BNB", "DOGE", "AVAX"]
+        
+    coin_query = " OR ".join([f"${c}" for c in coins])
+    cau_lenh = f"({coin_query}) -filter:replies lang:en since_time:{thoi_gian_truoc} until_time:{hien_tai}"
     
     # 3. Thông số API
     querystring = {"query": cau_lenh, "search_type": "Latest"}
     
-    logger.info(f"\n--- Đang quét thị trường 8 ĐỒNG COIN (Pseudo-Streaming) ---")
+    logger.info(f"\n--- Đang quét thị trường {len(coins)} ĐỒNG COIN (Pseudo-Streaming) ---")
     logger.info(f"Query: {cau_lenh}")
     total_count = 0
     

@@ -13,7 +13,13 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 KAFKA_HOST = os.getenv("KAFKA_HOST")
 KAFKA_PORT = os.getenv("KAFKA_PORT")
-CERTS_DIR = os.path.join(current_dir, 'certs')
+
+# Hỗ trợ lấy đường dẫn cert SSL từ biến môi trường hoặc fallback về certs cục bộ
+env_certs_dir = os.getenv("KAFKA_CERTS_DIR")
+if env_certs_dir and env_certs_dir.strip():
+    CERTS_DIR = env_certs_dir.strip()
+else:
+    CERTS_DIR = os.path.join(current_dir, 'certs')
 
 #khởi tạo logger
 logger = get_logger("Kafka_Base")

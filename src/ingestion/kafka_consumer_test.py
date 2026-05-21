@@ -36,7 +36,7 @@ try:
         auto_offset_reset='earliest',
         
         # Gom nhóm người đọc (Không bắt buộc nhưng nên có)
-        group_id='test-reader-group2' 
+        group_id='test-reader-group' 
     )
     print("[OK] Kết nối thành công! Đang chờ dữ liệu chảy về...\n")
     print("-" * 50)
