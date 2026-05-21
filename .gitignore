@@ -33,3 +33,4 @@ certs/
 *.log
 /test_storage.py
 .agents
+minikube-linux-amd64
