@@ -6,6 +6,7 @@ venv/
 *.log
 metastore_db/
 derby.log
+batch_plan.md
 
 # --- Node.js & Frontend ---
 node_modules/
