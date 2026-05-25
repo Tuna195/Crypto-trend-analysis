@@ -30,7 +30,8 @@ from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
 from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
 
 # Constants
-HDFS_RAW_PATH      = "hdfs://namenode:9000/data/crypto/raw_tweets/*/*/*/*.jsonl"
+HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
+HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/*/*/*/*.jsonl"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
 BULLISH_THRESHOLD  =  0.05
@@ -92,10 +93,74 @@ def is_trend_spike(
     return mention_count >= yesterday_avg * spike_ratio
 
 
+def build_hdfs_path(
+    target_date: Optional[str] = None,
+    target_hour: Optional[str] = None,
+    base_path: str = HDFS_BASE_PATH,
+) -> str:
+    """Build HDFS read path with optional partition pruning.
+
+    When --target-date and/or --target-hour are provided, constructs a
+    partition-specific path to avoid scanning the entire dataset.
+
+    Examples
+    --------
+    >>> build_hdfs_path("2026-05-21", "15")
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=2026-05-21/hour=15/*.jsonl'
+    >>> build_hdfs_path("2026-05-21")
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=2026-05-21/hour=*/*.jsonl'
+    >>> build_hdfs_path()
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=*/hour=*/*.jsonl'
+    """
+    coin_part = "coin=*"
+    date_part = f"date={target_date}" if target_date else "date=*"
+    hour_part = f"hour={target_hour}" if target_hour else "hour=*"
+    return f"{base_path}/{coin_part}/{date_part}/{hour_part}/*.jsonl"
+
+
+def log_batch_run(
+    mongo: MongoStorageClient,
+    *,
+    status: str,
+    mode: str,
+    target_date: Optional[str] = None,
+    target_hour: Optional[str] = None,
+    total_tweets: int = 0,
+    clean_tweets: int = 0,
+    spam_tweets: int = 0,
+    coins_processed: int = 0,
+    spikes: Optional[list[str]] = None,
+    error_message: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+) -> None:
+    """Record batch job execution metadata to MongoDB for auditing."""
+    doc = {
+        "job_type":          "batch",
+        "mode":              mode,
+        "status":            status,
+        "target_date":       target_date,
+        "target_hour":       target_hour,
+        "total_tweets":      total_tweets,
+        "clean_tweets":      clean_tweets,
+        "spam_tweets":       spam_tweets,
+        "coins_processed":   coins_processed,
+        "spikes_detected":   spikes or [],
+        "error_message":     error_message,
+        "duration_seconds":  duration_seconds,
+        "executed_at":       datetime.now(timezone.utc),
+    }
+    try:
+        mongo.db["batch_job_runs"].insert_one(doc)
+        log.info("Batch run metadata saved → MongoDB[batch_job_runs]")
+    except Exception as exc:
+        log.warning("Failed to save batch run metadata: %s", exc)
+
+
 # DEMO MODE
 
 def run_demo(args: argparse.Namespace) -> int:
     log.info("=== DEMO MODE ===")
+    job_start = datetime.now(timezone.utc)
     sample_path: Path = args.sample_path
 
     # Stage 1: Load raw tweets
@@ -234,17 +299,32 @@ def run_demo(args: argparse.Namespace) -> int:
     else:
         log.warning("No coin data to save.")
 
-    mongo.close()
-
     # Summary
     spikes = [d["coin"] for d in result_docs if d["is_trend_spike"]]
-    print("\n==DEMO BATCH JOB SUMMARY ==")
+    duration = (datetime.now(timezone.utc) - job_start).total_seconds()
+
+    # Audit log
+    log_batch_run(
+        mongo,
+        status="success",
+        mode="demo",
+        total_tweets=len(raw_tweets),
+        clean_tweets=len(clean_tweets),
+        spam_tweets=len(spam_tweets),
+        coins_processed=len(result_docs),
+        spikes=spikes,
+        duration_seconds=round(duration, 2),
+    )
+    mongo.close()
+
+    print("\n== DEMO BATCH JOB SUMMARY ==")
     print(f"  Raw tweets loaded  : {len(raw_tweets)}")
     print(f"  Clean tweets       : {len(clean_tweets)}")
     print(f"  Spam/bot tweets    : {len(spam_tweets)}")
     print(f"  Coins processed    : {len(result_docs)}")
     print(f"  Trend spikes       : {spikes if spikes else 'None'}")
     print(f"  Spike thresholds   : min_count>={args.spike_min_count}, ratio>={args.spike_ratio}x")
+    print(f"  Duration           : {duration:.1f}s")
     print(f"  MongoDB target     : {args.mongo_db}.{DEMO_COLLECTION}")
     return 0
 
@@ -304,6 +384,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         return 1
 
     log.info("=== SPARK MODE ===")
+    job_start = datetime.now(timezone.utc)
     spark = (
         SparkSession.builder
         .appName("CryptoBatchJob")
@@ -312,9 +393,24 @@ def run_spark_job(args: argparse.Namespace) -> int:
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # Stage 1: Load raw tweets from HDFS
-    log.info("Reading tweets from HDFS: %s", args.hdfs_path)
-    df = spark.read.schema(_raw_schema()).json(args.hdfs_path)
+    # Stage 1: Load raw tweets from HDFS (with partition pruning)
+    if args.target_date:
+        hdfs_path = build_hdfs_path(args.target_date, args.target_hour)
+        log.info(
+            "Incremental mode → date=%s hour=%s",
+            args.target_date, args.target_hour or "*",
+        )
+    else:
+        hdfs_path = args.hdfs_path
+        log.info("Full-scan mode → reading all partitions")
+
+    log.info("Reading tweets from HDFS: %s", hdfs_path)
+    try:
+        df = spark.read.schema(_raw_schema()).json(hdfs_path)
+    except Exception as exc:
+        log.error("Failed to read HDFS path %s: %s", hdfs_path, exc)
+        spark.stop()
+        return 1
 
     # Stage 2: Bot/spam filter
     flt = _filter_udf()
@@ -448,13 +544,29 @@ def run_spark_job(args: argparse.Namespace) -> int:
             " ⚡SPIKE" if spike else "",
         )
 
+    duration = (datetime.now(timezone.utc) - job_start).total_seconds()
+
+    # Audit log
+    log_batch_run(
+        mongo,
+        status="success",
+        mode="spark",
+        target_date=args.target_date,
+        target_hour=args.target_hour,
+        coins_processed=len(coin_rows),
+        spikes=spike_list,
+        duration_seconds=round(duration, 2),
+    )
+
     mongo.close()
     spark.stop()
 
-    print("\n===SPARK BATCH JOB SUMMARY ==")
+    print("\n=== SPARK BATCH JOB SUMMARY ==")
     print(f"  Coins processed : {len(coin_rows)}")
     print(f"  Trend spikes    : {spike_list if spike_list else 'None'}")
     print(f"  Spike thresholds: min_count>={args.spike_min_count}, ratio>={args.spike_ratio}x")
+    print(f"  Target partition: date={args.target_date or '*'} hour={args.target_hour or '*'}")
+    print(f"  Duration        : {duration:.1f}s")
     return 0
 
 
@@ -470,7 +582,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # HDFS
     p.add_argument("--hdfs-path", default=HDFS_RAW_PATH,
-                   help="HDFS glob path to raw tweet JSONL files")
+                   help="HDFS glob path to raw tweet JSONL files (fallback when no --target-date)")
+
+    # Incremental processing (partition pruning)
+    p.add_argument("--target-date", type=str, default=None,
+                   help="Target date for partition pruning (YYYY-MM-DD). "
+                        "When set, only reads data from this date partition on HDFS.")
+    p.add_argument("--target-hour", type=str, default=None,
+                   help="Target hour for partition pruning (HH, 00-23). "
+                        "Requires --target-date. Only reads data from this hour partition.")
 
     # MongoDB
     p.add_argument("--mongo-uri", default="mongodb://localhost:27017",
