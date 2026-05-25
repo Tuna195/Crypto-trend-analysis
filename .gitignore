@@ -32,5 +32,7 @@ certs/
 *.log
 *.log
 /test_storage.py
+/test_mongo_env.py
+/test_hdfs_env.py
 .agents
 minikube-linux-amd64

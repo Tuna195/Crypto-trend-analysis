@@ -7,10 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from dotenv import load_dotenv, find_dotenv
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 
+# Load environment variables from .env file
+load_dotenv(find_dotenv())
 
 class MongoStorageError(RuntimeError):
     """Raised when a MongoDB operation fails."""
