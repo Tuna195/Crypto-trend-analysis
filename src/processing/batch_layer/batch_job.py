@@ -34,8 +34,9 @@ HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
 HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/*/*/*/*.jsonl"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
-BULLISH_THRESHOLD  =  0.05
-BEARISH_THRESHOLD  = -0.05
+BULLISH_THRESHOLD      =  0.05
+BEARISH_THRESHOLD      = -0.05
+WHALE_WEIGHT_THRESHOLD = 2.0   # author_weight >= this → whale, else retail
 
 # Logger
 logging.basicConfig(
@@ -48,11 +49,47 @@ log = logging.getLogger("batch_job")
 # SHARED HELPERS
 
 def classify_sentiment(score: float) -> str:
+    """Map VADER compound score → bullish / neutral / bearish."""
     if score >= BULLISH_THRESHOLD:
         return "bullish"
     if score <= BEARISH_THRESHOLD:
         return "bearish"
     return "neutral"
+
+
+def classify_author_type(author_weight: float) -> str:
+    """Classify author as whale or retail based on weight threshold."""
+    return "whale" if author_weight >= WHALE_WEIGHT_THRESHOLD else "retail"
+
+
+def compute_segment_metrics(tweets: list[dict]) -> dict[str, Any]:
+    """Compute sentiment metrics for a segment (whale or retail) of tweets.
+
+    Returns a dict with keys: mention_count, avg_sentiment, fear_greed_score,
+    bullish_ratio, bearish_ratio, neutral_ratio.
+    Returns all zeros when the input list is empty.
+    """
+    n = len(tweets)
+    if n == 0:
+        return {
+            "mention_count": 0,
+            "avg_sentiment": 0.0,
+            "fear_greed_score": 50.0,
+            "bullish_ratio": 0.0,
+            "bearish_ratio": 0.0,
+            "neutral_ratio": 0.0,
+        }
+    scores = [t["sentiment_score"] for t in tweets]
+    avg    = round(sum(scores) / n, 4)
+    labels = [t["sentiment_label"] for t in tweets]
+    return {
+        "mention_count":    n,
+        "avg_sentiment":    avg,
+        "fear_greed_score": round((avg + 1) * 50, 2),
+        "bullish_ratio":    round(labels.count("bullish") / n, 4),
+        "bearish_ratio":    round(labels.count("bearish") / n, 4),
+        "neutral_ratio":    round(labels.count("neutral") / n, 4),
+    }
 
 
 def fetch_yesterday_avg_mentions(mongo: MongoStorageClient) -> dict[str, float]:
@@ -253,6 +290,12 @@ def run_demo(args: argparse.Namespace) -> int:
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
 
+        # Whale vs. Retail segmentation
+        whale_tweets  = [t for t in cleans if classify_author_type(float(t.get("author_weight", 1.0))) == "whale"]
+        retail_tweets = [t for t in cleans if classify_author_type(float(t.get("author_weight", 1.0))) == "retail"]
+        whale_metrics  = compute_segment_metrics(whale_tweets)
+        retail_metrics = compute_segment_metrics(retail_tweets)
+
         doc = {
             "coin":                   coin,
             "processed_at":           now_utc,
@@ -273,6 +316,17 @@ def run_demo(args: argparse.Namespace) -> int:
             "spike_min_count":        args.spike_min_count,
             "spike_ratio":            args.spike_ratio,
             "spam_usernames":         [t.get("username", "") for t in spams],
+            # Whale vs. Retail segmented metrics
+            "whale_mention_count":    whale_metrics["mention_count"],
+            "whale_avg_sentiment":    whale_metrics["avg_sentiment"],
+            "whale_fear_greed":       whale_metrics["fear_greed_score"],
+            "whale_bullish_ratio":    whale_metrics["bullish_ratio"],
+            "whale_bearish_ratio":    whale_metrics["bearish_ratio"],
+            "retail_mention_count":   retail_metrics["mention_count"],
+            "retail_avg_sentiment":   retail_metrics["avg_sentiment"],
+            "retail_fear_greed":      retail_metrics["fear_greed_score"],
+            "retail_bullish_ratio":   retail_metrics["bullish_ratio"],
+            "retail_bearish_ratio":   retail_metrics["bearish_ratio"],
         }
         result_docs.append(doc)
 
@@ -282,6 +336,11 @@ def run_demo(args: argparse.Namespace) -> int:
             coin, mention_count, spam_count, avg_sentiment,
             bullish_ratio * 100, bearish_ratio * 100, neutral_ratio * 100,
             fear_greed, spike_tag,
+        )
+        log.info(
+            "        whale=%d(FGI=%.1f) retail=%d(FGI=%.1f)",
+            whale_metrics["mention_count"], whale_metrics["fear_greed_score"],
+            retail_metrics["mention_count"], retail_metrics["fear_greed_score"],
         )
 
     # Storage to MongoDB[test_batch_process]
@@ -443,9 +502,16 @@ def run_spark_job(args: argparse.Namespace) -> int:
             F.coalesce(F.col("author_weight"), F.lit(1.0))
             * F.coalesce(F.col("engagement_score").cast("double"), F.lit(0.0)),
         )
+        .withColumn(
+            "author_type",
+            F.when(
+                F.coalesce(F.col("author_weight"), F.lit(1.0)) >= F.lit(WHALE_WEIGHT_THRESHOLD),
+                F.lit("whale"),
+            ).otherwise(F.lit("retail")),
+        )
     )
 
-    # Stage 4: Aggregate metrics per coin
+    # Stage 4: Aggregate metrics per coin (overall)
     coin_metrics_df = (
         df_analyzed.groupBy("coin").agg(
             F.count("*")                                           .alias("mention_count"),
@@ -466,6 +532,24 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("bearish_ratio",    F.round(F.col("bearish_count") / F.col("mention_count"), 4))
         .withColumn("neutral_ratio",    F.round(F.col("neutral_count") / F.col("mention_count"), 4))
     )
+
+    # Stage 4b: Aggregate metrics per (coin, author_type) — Whale vs. Retail
+    segment_metrics_df = (
+        df_analyzed.groupBy("coin", "author_type").agg(
+            F.count("*")                           .alias("seg_mention_count"),
+            F.round(F.avg("sentiment_score"), 4)   .alias("seg_avg_sentiment"),
+            F.sum(F.when(F.col("sentiment_score") >= BULLISH_THRESHOLD, 1).otherwise(0))
+                                                   .alias("seg_bullish_count"),
+            F.sum(F.when(F.col("sentiment_score") <= BEARISH_THRESHOLD, 1).otherwise(0))
+                                                   .alias("seg_bearish_count"),
+        )
+        .withColumn("seg_fear_greed", F.round((F.col("seg_avg_sentiment") + 1) * 50, 2))
+        .withColumn("seg_bullish_ratio", F.round(F.col("seg_bullish_count") / F.col("seg_mention_count"), 4))
+        .withColumn("seg_bearish_ratio", F.round(F.col("seg_bearish_count") / F.col("seg_mention_count"), 4))
+    )
+    segment_rows = {}
+    for r in segment_metrics_df.collect():
+        segment_rows.setdefault(r["coin"], {})[r["author_type"]] = r
 
     spam_stats_df = df_spam.groupBy("coin").agg(
         F.count("*").alias("spam_count"),
@@ -489,6 +573,11 @@ def run_spark_job(args: argparse.Namespace) -> int:
         spam_count    = spam_rows.get(coin, 0)
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike         = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
+
+        # Whale vs. Retail segment data for this coin
+        coin_segments = segment_rows.get(coin, {})
+        w = coin_segments.get("whale", {})
+        r = coin_segments.get("retail", {})
 
         try:
             mongo.save_sentiment_metric(
@@ -542,6 +631,13 @@ def run_spark_job(args: argparse.Namespace) -> int:
             float(row["bearish_ratio"]) * 100,
             float(row["neutral_ratio"]) * 100,
             " ⚡SPIKE" if spike else "",
+        )
+        log.info(
+            "        whale=%d(FGI=%.1f) retail=%d(FGI=%.1f)",
+            int(w.get("seg_mention_count", 0) if w else 0),
+            float(w.get("seg_fear_greed", 50.0) if w else 50.0),
+            int(r.get("seg_mention_count", 0) if r else 0),
+            float(r.get("seg_fear_greed", 50.0) if r else 50.0),
         )
 
     duration = (datetime.now(timezone.utc) - job_start).total_seconds()
