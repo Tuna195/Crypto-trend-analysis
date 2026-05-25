@@ -13,21 +13,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+from dotenv import load_dotenv, find_dotenv
 from hdfs import InsecureClient
 from hdfs.util import HdfsError
 
+# Load environment variables from .env file
+load_dotenv(find_dotenv())
 
 class HDFSClientError(RuntimeError):
-	"""Raised when an HDFS operation fails."""
+    """Raised when an HDFS operation fails."""
 
 
 @dataclass
 class HDFSConfig:
-	"""Configuration for WebHDFS access."""
+    """Configuration for WebHDFS access."""
 
-	webhdfs_url: str = os.getenv("WEBHDFS_URL", "http://namenode:9870")
-	user: str = os.getenv("HDFS_USER", "hdfs")
-	base_dir: str = os.getenv("HDFS_BASE_DIR", "/data/crypto")
+    webhdfs_url: str = os.getenv("WEBHDFS_URL", "http://namenode:9870")
+    user: str = os.getenv("HDFS_USER", "hdfs")
+    base_dir: str = os.getenv("HDFS_BASE_DIR", "/data/crypto")
 
 
 class HDFSStorageClient:
