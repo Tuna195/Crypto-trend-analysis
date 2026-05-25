@@ -677,20 +677,6 @@ def run_spark_job(args: argparse.Namespace) -> int:
         duration_seconds=round(duration, 2),
     )
 
-    duration = (datetime.now(timezone.utc) - job_start).total_seconds()
-
-    # Audit log
-    log_batch_run(
-        mongo,
-        status="success",
-        mode="spark",
-        target_date=args.target_date,
-        target_hour=args.target_hour,
-        coins_processed=len(coin_rows),
-        spikes=spike_list,
-        duration_seconds=round(duration, 2),
-    )
-
     mongo.close()
     spark.stop()
 
