@@ -484,6 +484,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("is_bot",         F.col("_f.is_bot"))
         .withColumn("spam_score",     F.col("_f.spam_score"))
         .withColumn("filter_reasons", F.col("_f.reasons"))
+        .withColumn("time_window",    F.date_trunc("hour", F.to_timestamp("created_at")))
         .drop("_f")
     )
     df_clean = df.filter(~F.col("is_spam") & ~F.col("is_bot"))
@@ -511,9 +512,9 @@ def run_spark_job(args: argparse.Namespace) -> int:
         )
     )
 
-    # Stage 4: Aggregate metrics per coin (overall)
+    # Stage 4: Aggregate metrics per (coin, time_window) (overall)
     coin_metrics_df = (
-        df_analyzed.groupBy("coin").agg(
+        df_analyzed.groupBy("coin", "time_window").agg(
             F.count("*")                                           .alias("mention_count"),
             F.round(F.avg("sentiment_score"), 4)                   .alias("avg_sentiment"),
             F.sum(F.when(F.col("sentiment_score") >= BULLISH_THRESHOLD,  1).otherwise(0))
@@ -533,9 +534,9 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("neutral_ratio",    F.round(F.col("neutral_count") / F.col("mention_count"), 4))
     )
 
-    # Stage 4b: Aggregate metrics per (coin, author_type) — Whale vs. Retail
+    # Stage 4b: Aggregate metrics per (coin, time_window, author_type) — Whale vs. Retail
     segment_metrics_df = (
-        df_analyzed.groupBy("coin", "author_type").agg(
+        df_analyzed.groupBy("coin", "time_window", "author_type").agg(
             F.count("*")                           .alias("seg_mention_count"),
             F.round(F.avg("sentiment_score"), 4)   .alias("seg_avg_sentiment"),
             F.sum(F.when(F.col("sentiment_score") >= BULLISH_THRESHOLD, 1).otherwise(0))
@@ -549,14 +550,14 @@ def run_spark_job(args: argparse.Namespace) -> int:
     )
     segment_rows = {}
     for r in segment_metrics_df.collect():
-        segment_rows.setdefault(r["coin"], {})[r["author_type"]] = r
+        segment_rows.setdefault((r["coin"], r["time_window"]), {})[r["author_type"]] = r
 
-    spam_stats_df = df_spam.groupBy("coin").agg(
+    spam_stats_df = df_spam.groupBy("coin", "time_window").agg(
         F.count("*").alias("spam_count"),
     )
 
     coin_rows = coin_metrics_df.collect()
-    spam_rows = {r["coin"]: r["spam_count"] for r in spam_stats_df.collect()}
+    spam_rows = {(r["coin"], r["time_window"]): r["spam_count"] for r in spam_stats_df.collect()}
 
     # Stage 5: Spike detection — fetch yesterday's data from MongoDB
     mongo_cfg      = MongoConfig(uri=args.mongo_uri, database=args.mongo_db)
@@ -569,25 +570,47 @@ def run_spark_job(args: argparse.Namespace) -> int:
     # Stage 6: Save to MongoDB
     for row in coin_rows:
         coin          = row["coin"]
+        time_window   = row["time_window"]
+        if time_window is None:
+            time_window = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        window_end    = time_window + timedelta(hours=1)
+            
         mention_count = int(row["mention_count"])
-        spam_count    = spam_rows.get(coin, 0)
+        total_eng     = int(row.get("total_engagement", 0))
+        spam_count    = spam_rows.get((coin, row["time_window"]), 0)
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike         = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
 
-        # Whale vs. Retail segment data for this coin
-        coin_segments = segment_rows.get(coin, {})
-        w = coin_segments.get("whale", {})
-        r = coin_segments.get("retail", {})
+        # Whale vs. Retail segment data for this coin/window
+        coin_segments = segment_rows.get((coin, row["time_window"]), {})
+        w = coin_segments.get("whale")
+        r = coin_segments.get("retail")
 
         try:
             mongo.save_sentiment_metric(
                 coin           = coin,
+                mention_count  = mention_count,
                 bullish_ratio  = float(row["bullish_ratio"]),
                 bearish_ratio  = float(row["bearish_ratio"]),
                 neutral_ratio  = float(row["neutral_ratio"]),
                 fear_greed_score = float(row["fear_greed_score"]),
-                window_start   = now_utc,
-                window_end     = now_utc,
+                total_engagement = total_eng,
+                window_start   = time_window,
+                window_end     = window_end,
+                whale_metrics={
+                    "mention_count": int(w["seg_mention_count"]),
+                    "avg_sentiment": float(w["seg_avg_sentiment"]),
+                    "fear_greed":    float(w["seg_fear_greed"]),
+                    "bullish_ratio": float(w["seg_bullish_ratio"]),
+                    "bearish_ratio": float(w["seg_bearish_ratio"]),
+                } if w else None,
+                retail_metrics={
+                    "mention_count": int(r["seg_mention_count"]),
+                    "avg_sentiment": float(r["seg_avg_sentiment"]),
+                    "fear_greed":    float(r["seg_fear_greed"]),
+                    "bullish_ratio": float(r["seg_bullish_ratio"]),
+                    "bearish_ratio": float(r["seg_bearish_ratio"]),
+                } if r else None
             )
         except Exception as exc:
             log.error("Failed to save sentiment metric for %s: %s", coin, exc)

@@ -77,24 +77,36 @@ class MongoStorageClient:
     def save_sentiment_metric(
         self,
         coin: str,
+        mention_count: int,
         bullish_ratio: float,
         bearish_ratio: float,
         neutral_ratio: float,
         fear_greed_score: float,
+        total_engagement: int,
         window_start: datetime,
         window_end: datetime,
+        whale_metrics: Optional[dict] = None,
+        retail_metrics: Optional[dict] = None,
     ) -> str:
         """Store one sentiment metric snapshot for a coin/time window."""
         doc = {
             "coin": coin.upper().replace("$", ""),
+            "mention_count": mention_count,
             "bullish_ratio": bullish_ratio,
             "bearish_ratio": bearish_ratio,
             "neutral_ratio": neutral_ratio,
             "fear_greed_score": fear_greed_score,
+            "total_engagement": total_engagement,
             "window_start": window_start,
             "window_end": window_end,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(datetime.timezone.utc),
         }
+        
+        if whale_metrics:
+            doc.update({f"whale_{k}": v for k, v in whale_metrics.items()})
+        if retail_metrics:
+            doc.update({f"retail_{k}": v for k, v in retail_metrics.items()})
+            
         return self._insert_one(self.db.sentiment_metrics, doc)
 
     def save_trend_spike(
