@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-ingestion
+  namespace: crypto-trend
+  labels:
+    app: crypto-ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-ingestion
+  template:
+    metadata:
+      labels:
+        app: crypto-ingestion
+    spec:
+      containers:
+        - name: ingestion
+          image: crypto-app:latest
+          imagePullPolicy: Never
+          command: ["python", "src/ingestion/main_ingestion.py"]
+          env:
+            # Kết nối tới MongoDB ở cùng namespace
+            - name: MONGO_URI
+              value: "mongodb://mongodb:27017"
+            - name: MONGO_DB
+              value: "crypto_trends"
+            # Kết nối tới HDFS ở cùng namespace
+            - name: WEBHDFS_URL
+              value: "http://namenode:9870"
+            - name: HDFS_USER
+              value: "hdfs"
+            - name: HDFS_BASE_DIR
+              value: "/data/crypto"
+            
+            # --- CÁC BIẾN CẦN BẠN BỔ SUNG ---
+            - name: RAPIDAPI_KEY
+              value: "ĐIỀN_KEY_CỦA_BẠN_VÀO_ĐÂY"
+            - name: RAPIDAPI_HOST
+              value: "twitter-api45.p.rapidapi.com"
+            - name: KAFKA_HOST
+              value: "ĐIỀN_HOST_AIVEN_KAFKA_VÀO_ĐÂY"
+            - name: KAFKA_PORT
+              value: "ĐIỀN_PORT_KAFKA"
