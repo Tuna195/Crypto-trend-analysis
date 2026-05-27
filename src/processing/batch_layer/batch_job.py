@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import os
+import sys
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYTHONUNBUFFERED"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(), override=True)
+
 import argparse
 import json
+import re
+import pyarrow
 import logging
-import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,11 +40,16 @@ from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
 from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
 
 # Constants
-HDFS_RAW_PATH      = "hdfs://namenode:9000/data/crypto/raw_tweets/*/*/*/*.jsonl"
+HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
+HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
-BULLISH_THRESHOLD  =  0.05
-BEARISH_THRESHOLD  = -0.05
+BULLISH_THRESHOLD      =  0.05
+BEARISH_THRESHOLD      = -0.05
+WHALE_WEIGHT_THRESHOLD = 2.0   # author_weight >= this → whale, else retail
+
+# Tracked coins — used to extract individual coins from MULTI_CRYPTO tweets
+TRACKED_COINS = {"BTC", "ETH", "SOL", "XRP", "ADA", "BNB", "DOGE", "AVAX"}
 
 # Logger
 logging.basicConfig(
@@ -46,12 +61,62 @@ log = logging.getLogger("batch_job")
 
 # SHARED HELPERS
 
+import re
+_CASHTAG_RE = re.compile(r"\$([A-Za-z]{2,10})")
+
+def extract_coins_from_text(text: str) -> list[str]:
+    """Extract known coin tickers from tweet text via $TICKER patterns.
+
+    Returns a deduplicated list of uppercase coin symbols found in the text.
+    If no known coin is found, returns ["UNKNOWN"].
+    """
+    found = {m.group(1).upper() for m in _CASHTAG_RE.finditer(text or "")}
+    matched = [c for c in found if c in TRACKED_COINS]
+    return matched if matched else ["UNKNOWN"]
+
+
 def classify_sentiment(score: float) -> str:
+    """Map VADER compound score → bullish / neutral / bearish."""
     if score >= BULLISH_THRESHOLD:
         return "bullish"
     if score <= BEARISH_THRESHOLD:
         return "bearish"
     return "neutral"
+
+
+def classify_author_type(author_weight: float) -> str:
+    """Classify author as whale or retail based on weight threshold."""
+    return "whale" if author_weight >= WHALE_WEIGHT_THRESHOLD else "retail"
+
+
+def compute_segment_metrics(tweets: list[dict]) -> dict[str, Any]:
+    """Compute sentiment metrics for a segment (whale or retail) of tweets.
+
+    Returns a dict with keys: mention_count, avg_sentiment, fear_greed_score,
+    bullish_ratio, bearish_ratio, neutral_ratio.
+    Returns all zeros when the input list is empty.
+    """
+    n = len(tweets)
+    if n == 0:
+        return {
+            "mention_count": 0,
+            "avg_sentiment": 0.0,
+            "fear_greed_score": 50.0,
+            "bullish_ratio": 0.0,
+            "bearish_ratio": 0.0,
+            "neutral_ratio": 0.0,
+        }
+    scores = [t["sentiment_score"] for t in tweets]
+    avg    = round(sum(scores) / n, 4)
+    labels = [t["sentiment_label"] for t in tweets]
+    return {
+        "mention_count":    n,
+        "avg_sentiment":    avg,
+        "fear_greed_score": round((avg + 1) * 50, 2),
+        "bullish_ratio":    round(labels.count("bullish") / n, 4),
+        "bearish_ratio":    round(labels.count("bearish") / n, 4),
+        "neutral_ratio":    round(labels.count("neutral") / n, 4),
+    }
 
 
 def fetch_yesterday_avg_mentions(mongo: MongoStorageClient) -> dict[str, float]:
@@ -61,7 +126,7 @@ def fetch_yesterday_avg_mentions(mongo: MongoStorageClient) -> dict[str, float]:
     end       = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
 
     try:
-        docs = list(mongo.db.sentiment_metrics.find(
+        docs = list(mongo.db.batch_sentiment_metrics.find(
             {"window_start": {"$gte": start, "$lte": end}},
             {"_id": 0, "coin": 1, "mention_count": 1},
         ))
@@ -92,10 +157,74 @@ def is_trend_spike(
     return mention_count >= yesterday_avg * spike_ratio
 
 
+def build_hdfs_path(
+    target_date: Optional[str] = None,
+    target_hour: Optional[str] = None,
+    base_path: str = HDFS_BASE_PATH,
+) -> str:
+    """Build HDFS read path with optional partition pruning.
+
+    When --target-date and/or --target-hour are provided, constructs a
+    partition-specific path to avoid scanning the entire dataset.
+
+    Examples
+    --------
+    >>> build_hdfs_path("2026-05-21", "15")
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=2026-05-21/hour=15/*.jsonl'
+    >>> build_hdfs_path("2026-05-21")
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=2026-05-21/hour=*/*.jsonl'
+    >>> build_hdfs_path()
+    'hdfs://namenode:9000/data/crypto/raw_tweets/coin=*/date=*/hour=*/*.jsonl'
+    """
+    coin_part = "coin=*"
+    date_part = f"date={target_date}" if target_date else "date=*"
+    hour_part = f"hour={target_hour}" if target_hour else "hour=*"
+    return f"{base_path}/{coin_part}/{date_part}/{hour_part}/*.jsonl"
+
+
+def log_batch_run(
+    mongo: MongoStorageClient,
+    *,
+    status: str,
+    mode: str,
+    target_date: Optional[str] = None,
+    target_hour: Optional[str] = None,
+    total_tweets: int = 0,
+    clean_tweets: int = 0,
+    spam_tweets: int = 0,
+    coins_processed: int = 0,
+    spikes: Optional[list[str]] = None,
+    error_message: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+) -> None:
+    """Record batch job execution metadata to MongoDB for auditing."""
+    doc = {
+        "job_type":          "batch",
+        "mode":              mode,
+        "status":            status,
+        "target_date":       target_date,
+        "target_hour":       target_hour,
+        "total_tweets":      total_tweets,
+        "clean_tweets":      clean_tweets,
+        "spam_tweets":       spam_tweets,
+        "coins_processed":   coins_processed,
+        "spikes_detected":   spikes or [],
+        "error_message":     error_message,
+        "duration_seconds":  duration_seconds,
+        "executed_at":       datetime.now(timezone.utc),
+    }
+    try:
+        mongo.db["batch_job_runs"].insert_one(doc)
+        log.info("Batch run metadata saved → MongoDB[batch_job_runs]")
+    except Exception as exc:
+        log.warning("Failed to save batch run metadata: %s", exc)
+
+
 # DEMO MODE
 
 def run_demo(args: argparse.Namespace) -> int:
     log.info("=== DEMO MODE ===")
+    job_start = datetime.now(timezone.utc)
     sample_path: Path = args.sample_path
 
     # Stage 1: Load raw tweets
@@ -118,19 +247,29 @@ def run_demo(args: argparse.Namespace) -> int:
 
     for tweet in raw_tweets:
         content  = tweet.get("content") or tweet.get("text", "")
-        username = tweet.get("username", "")
+        username = tweet.get("username") or tweet.get("author", "")
         eng      = int(tweet.get("engagement_score", 0))
         weight   = float(tweet.get("author_weight", 1.0))
+        raw_coin = tweet.get("coin") or tweet.get("target_coin", "MIXED")
 
-        result     = bot_filter.detect_spam(content, username, eng, weight)
-        tweet_copy = dict(tweet)
-        tweet_copy.update({
-            "is_spam":        result.is_spam,
-            "is_bot":         result.is_bot,
-            "spam_score":     round(result.total_score, 4),
-            "filter_reasons": result.reasons,
-        })
-        (spam_tweets if (result.is_spam or result.is_bot) else clean_tweets).append(tweet_copy)
+        # Nếu target_coin là MULTI_CRYPTO / MIXED → trích xuất từng coin riêng lẻ từ text
+        if raw_coin.upper() in ("MULTI_CRYPTO", "MIXED"):
+            coins = extract_coins_from_text(content)
+        else:
+            coins = [raw_coin.upper().replace("$", "")]
+
+        result = bot_filter.detect_spam(content, username, eng, weight)
+
+        for coin in coins:
+            tweet_copy = dict(tweet)
+            tweet_copy["coin"] = coin
+            tweet_copy.update({
+                "is_spam":        result.is_spam,
+                "is_bot":         result.is_bot,
+                "spam_score":     round(result.total_score, 4),
+                "filter_reasons": result.reasons,
+            })
+            (spam_tweets if (result.is_spam or result.is_bot) else clean_tweets).append(tweet_copy)
 
     log.info("Filter result → clean: %d | spam/bot: %d", len(clean_tweets), len(spam_tweets))
 
@@ -188,6 +327,12 @@ def run_demo(args: argparse.Namespace) -> int:
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
 
+        # Whale vs. Retail segmentation
+        whale_tweets  = [t for t in cleans if classify_author_type(float(t.get("author_weight", 1.0))) == "whale"]
+        retail_tweets = [t for t in cleans if classify_author_type(float(t.get("author_weight", 1.0))) == "retail"]
+        whale_metrics  = compute_segment_metrics(whale_tweets)
+        retail_metrics = compute_segment_metrics(retail_tweets)
+
         doc = {
             "coin":                   coin,
             "processed_at":           now_utc,
@@ -208,6 +353,17 @@ def run_demo(args: argparse.Namespace) -> int:
             "spike_min_count":        args.spike_min_count,
             "spike_ratio":            args.spike_ratio,
             "spam_usernames":         [t.get("username", "") for t in spams],
+            # Whale vs. Retail segmented metrics
+            "whale_mention_count":    whale_metrics["mention_count"],
+            "whale_avg_sentiment":    whale_metrics["avg_sentiment"],
+            "whale_fear_greed":       whale_metrics["fear_greed_score"],
+            "whale_bullish_ratio":    whale_metrics["bullish_ratio"],
+            "whale_bearish_ratio":    whale_metrics["bearish_ratio"],
+            "retail_mention_count":   retail_metrics["mention_count"],
+            "retail_avg_sentiment":   retail_metrics["avg_sentiment"],
+            "retail_fear_greed":      retail_metrics["fear_greed_score"],
+            "retail_bullish_ratio":   retail_metrics["bullish_ratio"],
+            "retail_bearish_ratio":   retail_metrics["bearish_ratio"],
         }
         result_docs.append(doc)
 
@@ -217,6 +373,11 @@ def run_demo(args: argparse.Namespace) -> int:
             coin, mention_count, spam_count, avg_sentiment,
             bullish_ratio * 100, bearish_ratio * 100, neutral_ratio * 100,
             fear_greed, spike_tag,
+        )
+        log.info(
+            "        whale=%d(FGI=%.1f) retail=%d(FGI=%.1f)",
+            whale_metrics["mention_count"], whale_metrics["fear_greed_score"],
+            retail_metrics["mention_count"], retail_metrics["fear_greed_score"],
         )
 
     # Storage to MongoDB[test_batch_process]
@@ -234,17 +395,32 @@ def run_demo(args: argparse.Namespace) -> int:
     else:
         log.warning("No coin data to save.")
 
-    mongo.close()
-
     # Summary
     spikes = [d["coin"] for d in result_docs if d["is_trend_spike"]]
-    print("\n==DEMO BATCH JOB SUMMARY ==")
+    duration = (datetime.now(timezone.utc) - job_start).total_seconds()
+
+    # Audit log
+    log_batch_run(
+        mongo,
+        status="success",
+        mode="demo",
+        total_tweets=len(raw_tweets),
+        clean_tweets=len(clean_tweets),
+        spam_tweets=len(spam_tweets),
+        coins_processed=len(result_docs),
+        spikes=spikes,
+        duration_seconds=round(duration, 2),
+    )
+    mongo.close()
+
+    print("\n== DEMO BATCH JOB SUMMARY ==")
     print(f"  Raw tweets loaded  : {len(raw_tweets)}")
     print(f"  Clean tweets       : {len(clean_tweets)}")
     print(f"  Spam/bot tweets    : {len(spam_tweets)}")
     print(f"  Coins processed    : {len(result_docs)}")
     print(f"  Trend spikes       : {spikes if spikes else 'None'}")
     print(f"  Spike thresholds   : min_count>={args.spike_min_count}, ratio>={args.spike_ratio}x")
+    print(f"  Duration           : {duration:.1f}s")
     print(f"  MongoDB target     : {args.mongo_db}.{DEMO_COLLECTION}")
     return 0
 
@@ -253,18 +429,30 @@ def run_demo(args: argparse.Namespace) -> int:
 
 def _raw_schema():
     return T.StructType([
-        T.StructField("tweet_id",         T.StringType(),              True),
-        T.StructField("user_id",          T.StringType(),              True),
-        T.StructField("username",         T.StringType(),              True),
-        T.StructField("content",          T.StringType(),              True),
+        T.StructField("id",               T.StringType(),              True),
+        T.StructField("text",             T.StringType(),              True),
         T.StructField("created_at",       T.StringType(),              True),
-        T.StructField("coin",             T.StringType(),              True),
-        T.StructField("engagement_score", T.IntegerType(),             True),
-        T.StructField("author_weight",    T.DoubleType(),              True),
-        T.StructField("hashtags",         T.ArrayType(T.StringType()), True),
-        T.StructField("cashtags",         T.ArrayType(T.StringType()), True),
+        T.StructField("author",           T.StringType(),              True),
+        T.StructField("target_coin",      T.StringType(),              True),
     ])
 
+
+_global_spam_filter = None
+_global_sentiment_analyzer = None
+
+def get_spam_filter():
+    global _global_spam_filter
+    if _global_spam_filter is None:
+        from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
+        _global_spam_filter = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
+    return _global_spam_filter
+
+def get_sentiment_analyzer():
+    global _global_sentiment_analyzer
+    if _global_sentiment_analyzer is None:
+        from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
+        _global_sentiment_analyzer = SentimentAnalyzer()
+    return _global_sentiment_analyzer
 
 def _filter_udf():
     filter_result_type = T.StructType([
@@ -275,7 +463,7 @@ def _filter_udf():
     ])
 
     def _fn(content, username, eng, weight):
-        f = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
+        f = get_spam_filter()
         r = f.detect_spam(
             content or "",
             username=username,
@@ -288,10 +476,9 @@ def _filter_udf():
 
 
 def _sentiment_udf():
-    return F.udf(
-        lambda text: float(SentimentAnalyzer().get_score(text or "")),
-        T.DoubleType(),
-    )
+    def _sent_fn(text):
+        return float(get_sentiment_analyzer().get_score(text or ""))
+    return F.udf(_sent_fn, T.DoubleType())
 
 
 def _label_udf():
@@ -304,17 +491,85 @@ def run_spark_job(args: argparse.Namespace) -> int:
         return 1
 
     log.info("=== SPARK MODE ===")
+    job_start = datetime.now(timezone.utc)
     spark = (
         SparkSession.builder
         .appName("CryptoBatchJob")
-        .config("spark.sql.shuffle.partitions", "4")
+        .master("local[*]")
+        .config("spark.driver.memory", "8g")
+        .config("spark.executor.memory", "8g")
+        .config("spark.python.worker.memory", "4g")
+        .config("spark.python.worker.faulthandler.enabled", "true")
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # Stage 1: Load raw tweets from HDFS
-    log.info("Reading tweets from HDFS: %s", args.hdfs_path)
-    df = spark.read.schema(_raw_schema()).json(args.hdfs_path)
+    # Stage 1: Load raw tweets from HDFS (with partition pruning)
+    if args.target_date:
+        hdfs_path = build_hdfs_path(args.target_date, args.target_hour)
+        log.info(
+            "Incremental mode → date=%s hour=%s",
+            args.target_date, args.target_hour or "*",
+        )
+    else:
+        hdfs_path = args.hdfs_path
+        log.info("Full-scan mode → reading all partitions")
+    log.info("Reading from: %s", hdfs_path)
+
+    try:
+        df = (
+            spark.read.schema(_raw_schema())
+            .option("recursiveFileLookup", "true")
+            .json(hdfs_path)
+        )
+        
+        df = (
+            df
+            .withColumnRenamed("id", "tweet_id")
+            .withColumnRenamed("text", "content")
+            .withColumnRenamed("author", "username")
+            .withColumnRenamed("target_coin", "coin")
+        )
+
+        if "engagement_score" not in df.columns:
+            df = df.withColumn("engagement_score", F.lit(0))
+        if "author_weight" not in df.columns:
+            df = df.withColumn("author_weight", F.lit(1.0))
+    except Exception as exc:
+        log.error("Failed to read HDFS path %s: %s", hdfs_path, exc)
+        spark.stop()
+        return 1
+
+    log.info(f"Số lượng bản ghi sau khi load: {df.count()}")
+
+    # Stage 1b: Coin Extraction — explode MULTI_CRYPTO tweets into per-coin rows
+    tracked_upper = [c.upper() for c in TRACKED_COINS]
+    # regex: \\$ = literal dollar sign in Spark/Java regex
+    raw_extracted = F.expr(r"regexp_extract_all(content, '\\$([A-Za-z]{2,10})', 1)")
+    upper_extracted = F.transform(raw_extracted, lambda x: F.upper(x))
+    distinct_extracted = F.array_distinct(upper_extracted)
+    extracted_and_filtered = F.filter(distinct_extracted, lambda x: x.isin(tracked_upper))
+
+    # Các giá trị target_coin cần tách riêng từng coin
+    multi_coin_labels = ["MULTI_CRYPTO", "MIXED", "WHALE_SIGNAL"]
+
+    df = df.withColumn(
+        "_coins",
+        F.when(
+            F.col("coin").isNotNull() & (~F.upper(F.col("coin")).isin(*multi_coin_labels)),
+            F.array(F.regexp_replace(F.upper(F.col("coin")), r"\$", ""))
+        ).otherwise(
+            F.when(F.size(extracted_and_filtered) > 0, extracted_and_filtered)
+             .otherwise(F.array(F.lit("UNKNOWN")))
+        )
+    )
+
+    df = df.withColumn("coin", F.explode("_coins")).drop("_coins")
+    df = df.filter(F.col("coin") != "UNKNOWN")
 
     # Stage 2: Bot/spam filter
     flt = _filter_udf()
@@ -329,11 +584,12 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("is_bot",         F.col("_f.is_bot"))
         .withColumn("spam_score",     F.col("_f.spam_score"))
         .withColumn("filter_reasons", F.col("_f.reasons"))
+        .withColumn("time_window",    F.date_trunc("hour", F.to_timestamp("created_at", "EEE MMM dd HH:mm:ss Z yyyy")))
         .drop("_f")
     )
     df_clean = df.filter(~F.col("is_spam") & ~F.col("is_bot"))
     df_spam  = df.filter( F.col("is_spam") |  F.col("is_bot"))
-
+    
     # Stage 3: Sentiment analysis
     sent_udf  = _sentiment_udf()
     label_udf = _label_udf()
@@ -347,11 +603,18 @@ def run_spark_job(args: argparse.Namespace) -> int:
             F.coalesce(F.col("author_weight"), F.lit(1.0))
             * F.coalesce(F.col("engagement_score").cast("double"), F.lit(0.0)),
         )
+        .withColumn(
+            "author_type",
+            F.when(
+                F.coalesce(F.col("author_weight"), F.lit(1.0)) >= F.lit(WHALE_WEIGHT_THRESHOLD),
+                F.lit("whale"),
+            ).otherwise(F.lit("retail")),
+        )
     )
 
-    # Stage 4: Aggregate metrics per coin
+    # Stage 4: Aggregate metrics per (coin, time_window) (overall)
     coin_metrics_df = (
-        df_analyzed.groupBy("coin").agg(
+        df_analyzed.groupBy("coin", "time_window").agg(
             F.count("*")                                           .alias("mention_count"),
             F.round(F.avg("sentiment_score"), 4)                   .alias("avg_sentiment"),
             F.sum(F.when(F.col("sentiment_score") >= BULLISH_THRESHOLD,  1).otherwise(0))
@@ -370,13 +633,33 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("bearish_ratio",    F.round(F.col("bearish_count") / F.col("mention_count"), 4))
         .withColumn("neutral_ratio",    F.round(F.col("neutral_count") / F.col("mention_count"), 4))
     )
+    log.info("Overall coin metrics aggregated.")
 
-    spam_stats_df = df_spam.groupBy("coin").agg(
+    # Stage 4b: Aggregate metrics per (coin, time_window, author_type) — Whale vs. Retail
+    segment_metrics_df = (
+        df_analyzed.groupBy("coin", "time_window", "author_type").agg(
+            F.count("*")                           .alias("seg_mention_count"),
+            F.round(F.avg("sentiment_score"), 4)   .alias("seg_avg_sentiment"),
+            F.sum(F.when(F.col("sentiment_score") >= BULLISH_THRESHOLD, 1).otherwise(0))
+                                                   .alias("seg_bullish_count"),
+            F.sum(F.when(F.col("sentiment_score") <= BEARISH_THRESHOLD, 1).otherwise(0))
+                                                   .alias("seg_bearish_count"),
+        )
+        .withColumn("seg_fear_greed", F.round((F.col("seg_avg_sentiment") + 1) * 50, 2))
+        .withColumn("seg_bullish_ratio", F.round(F.col("seg_bullish_count") / F.col("seg_mention_count"), 4))
+        .withColumn("seg_bearish_ratio", F.round(F.col("seg_bearish_count") / F.col("seg_mention_count"), 4))
+    )
+    
+    segment_rows = {}
+    for r in segment_metrics_df.collect():
+        segment_rows.setdefault((r["coin"], r["time_window"]), {})[r["author_type"]] = r
+
+    spam_stats_df = df_spam.groupBy("coin", "time_window").agg(
         F.count("*").alias("spam_count"),
     )
 
     coin_rows = coin_metrics_df.collect()
-    spam_rows = {r["coin"]: r["spam_count"] for r in spam_stats_df.collect()}
+    spam_rows = {(r["coin"], r["time_window"]): r["spam_count"] for r in spam_stats_df.collect()}
 
     # Stage 5: Spike detection — fetch yesterday's data from MongoDB
     mongo_cfg      = MongoConfig(uri=args.mongo_uri, database=args.mongo_db)
@@ -389,20 +672,47 @@ def run_spark_job(args: argparse.Namespace) -> int:
     # Stage 6: Save to MongoDB
     for row in coin_rows:
         coin          = row["coin"]
+        time_window   = row["time_window"]
+        if time_window is None:
+            time_window = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        window_end    = time_window + timedelta(hours=1)
+            
         mention_count = int(row["mention_count"])
-        spam_count    = spam_rows.get(coin, 0)
+        total_eng = int(row["total_engagement"] if row["total_engagement"] is not None else 0)
+        spam_count    = spam_rows.get((coin, row["time_window"]), 0)
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike         = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
+
+        # Whale vs. Retail segment data for this coin/window
+        coin_segments = segment_rows.get((coin, row["time_window"]), {})
+        w = coin_segments.get("whale")
+        r = coin_segments.get("retail")
 
         try:
             mongo.save_sentiment_metric(
                 coin           = coin,
+                mention_count  = mention_count,
                 bullish_ratio  = float(row["bullish_ratio"]),
                 bearish_ratio  = float(row["bearish_ratio"]),
                 neutral_ratio  = float(row["neutral_ratio"]),
                 fear_greed_score = float(row["fear_greed_score"]),
-                window_start   = now_utc,
-                window_end     = now_utc,
+                total_engagement = total_eng,
+                window_start   = time_window,
+                window_end     = window_end,
+                whale_metrics={
+                    "mention_count": int(w["seg_mention_count"]),
+                    "avg_sentiment": float(w["seg_avg_sentiment"]),
+                    "fear_greed":    float(w["seg_fear_greed"]),
+                    "bullish_ratio": float(w["seg_bullish_ratio"]),
+                    "bearish_ratio": float(w["seg_bearish_ratio"]),
+                } if w else None,
+                retail_metrics={
+                    "mention_count": int(r["seg_mention_count"]),
+                    "avg_sentiment": float(r["seg_avg_sentiment"]),
+                    "fear_greed":    float(r["seg_fear_greed"]),
+                    "bullish_ratio": float(r["seg_bullish_ratio"]),
+                    "bearish_ratio": float(r["seg_bearish_ratio"]),
+                } if r else None
             )
         except Exception as exc:
             log.error("Failed to save sentiment metric for %s: %s", coin, exc)
@@ -433,6 +743,8 @@ def run_spark_job(args: argparse.Namespace) -> int:
                     baseline_count = yesterday_avg,
                     z_score        = (mention_count - yesterday_avg) / max(yesterday_avg, 1),
                     related_coins  = [coin],
+                    window_start   = time_window,
+                    window_end     = window_end,
                     detected_at    = now_utc,
                 )
             except Exception as exc:
@@ -445,16 +757,39 @@ def run_spark_job(args: argparse.Namespace) -> int:
             float(row["bullish_ratio"]) * 100,
             float(row["bearish_ratio"]) * 100,
             float(row["neutral_ratio"]) * 100,
-            " ⚡SPIKE" if spike else "",
+            " SPIKE" if spike else "",
         )
+        log.info(
+            "        whale=%d(FGI=%.1f) retail=%d(FGI=%.1f)",
+            int(w.get("seg_mention_count", 0) if w else 0),
+            float(w.get("seg_fear_greed", 50.0) if w else 50.0),
+            int(r["seg_mention_count"] if r and r["seg_mention_count"] is not None else 0),
+            float(r["seg_fear_greed"] if r and r["seg_fear_greed"] is not None else 50.0),
+        )
+
+    duration = (datetime.now(timezone.utc) - job_start).total_seconds()
+
+    # Audit log
+    log_batch_run(
+        mongo,
+        status="success",
+        mode="spark",
+        target_date=args.target_date,
+        target_hour=args.target_hour,
+        coins_processed=len(coin_rows),
+        spikes=spike_list,
+        duration_seconds=round(duration, 2),
+    )
 
     mongo.close()
     spark.stop()
 
-    print("\n===SPARK BATCH JOB SUMMARY ==")
+    print("\n=== SPARK BATCH JOB SUMMARY ==")
     print(f"  Coins processed : {len(coin_rows)}")
     print(f"  Trend spikes    : {spike_list if spike_list else 'None'}")
     print(f"  Spike thresholds: min_count>={args.spike_min_count}, ratio>={args.spike_ratio}x")
+    print(f"  Target partition: date={args.target_date or '*'} hour={args.target_hour or '*'}")
+    print(f"  Duration        : {duration:.1f}s")
     return 0
 
 
@@ -470,10 +805,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # HDFS
     p.add_argument("--hdfs-path", default=HDFS_RAW_PATH,
-                   help="HDFS glob path to raw tweet JSONL files")
+                   help="HDFS glob path to raw tweet JSONL files (fallback when no --target-date)")
+
+    # Incremental processing (partition pruning)
+    p.add_argument("--target-date", type=str, default=None,
+                   help="Target date for partition pruning (YYYY-MM-DD). "
+                        "When set, only reads data from this date partition on HDFS.")
+    p.add_argument("--target-hour", type=str, default=None,
+                   help="Target hour for partition pruning (HH, 00-23). "
+                        "Requires --target-date. Only reads data from this hour partition.")
 
     # MongoDB
-    p.add_argument("--mongo-uri", default="mongodb://localhost:27017",
+    p.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
                    help="MongoDB connection URI")
     p.add_argument("--mongo-db",  default="crypto_trends",
                    help="MongoDB database name")
