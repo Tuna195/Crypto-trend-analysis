@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from collections import deque
 
 from kafka_connection import get_kafka_producer
@@ -70,16 +71,26 @@ def fetch_and_produce():
                 if not author and item.get("user_info"):
                     author = item.get("user_info").get("screen_name")
                 
-                # Đóng gói dữ liệu chuẩn chỉ
+                # Đóng gói dữ liệu chuẩn chỉ (Đã bổ sung các chỉ số tương tác và user metadata)
+                user_info = item.get("user_info") or {}
                 clean_tweet = {
                     "id": tweet_id,
                     "text": item.get("text") or item.get("full_text", ""),
                     "created_at": item.get("created_at") or item.get("timestamp"),
                     "author": author or "unknown",
-                    "target_coin": "MULTI_CRYPTO"
+                    "target_coin": "MULTI_CRYPTO",
+                    "like_count": item.get("favorites") or 0,
+                    "retweet_count": item.get("retweets") or 0,
+                    "reply_count": item.get("replies") or 0,
+                    "quote_count": item.get("quotes") or 0,
+                    "bookmark_count": item.get("bookmarks") or 0,
+                    "followers_count": user_info.get("followers_count") or 0,
+                    "verified": user_info.get("verified") or False
                 }
                 
                 if clean_tweet["text"]:
+                    # In debug log JSON đầy đủ gửi lên Kafka để người dùng kiểm tra
+                    logger.info(f"[DEBUG KAFKA JSON] {json.dumps(clean_tweet, ensure_ascii=False)}")
                     producer.send(KAFKA_TOPIC, key="CRYPTO", value=clean_tweet)
                     seen_tweets.append(tweet_id)
                     total_count += 1
