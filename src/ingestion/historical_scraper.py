@@ -1,5 +1,6 @@
 import os
 import time
+import json
 
 from kafka_connection import get_kafka_producer
 from api_helper import fetch_tweets_with_fallback
@@ -97,14 +98,25 @@ def fetch_historical():
                     if not author and item.get("user_info"):
                         author = item.get("user_info").get("screen_name")
                     
+                    # Đóng gói dữ liệu chuẩn chỉ (Đã bổ sung các chỉ số tương tác và user metadata)
+                    user_info = item.get("user_info") or {}
                     clean_tweet = {
                         "id": tweet_id,
                         "text": item.get("text") or item.get("full_text", ""),
                         "created_at": item.get("created_at") or item.get("timestamp"),
                         "author": author or "unknown",
-                        "target_coin": target['name']
+                        "target_coin": target['name'],
+                        "like_count": item.get("favorites") or 0,
+                        "retweet_count": item.get("retweets") or 0,
+                        "reply_count": item.get("replies") or 0,
+                        "quote_count": item.get("quotes") or 0,
+                        "bookmark_count": item.get("bookmarks") or 0,
+                        "followers_count": user_info.get("followers_count") or 0,
+                        "verified": user_info.get("verified") or False
                     }
                     if clean_tweet["text"]:
+                        # In debug log JSON đầy đủ gửi lên Kafka để người dùng kiểm tra
+                        logger.info(f"[DEBUG KAFKA JSON] {json.dumps(clean_tweet, ensure_ascii=False)}")
                         producer.send(target['topic'], key=target['key'], value=clean_tweet)
                         count_in_chunk += 1
                         total_saved += 1
