@@ -144,7 +144,15 @@ class StreamJobTest(unittest.TestCase):
             collection.last_query,
             {"symbol": "DOGE", "window_end": {"$lt": "2026-04-18T08:05:00Z"}},
         )
-        self.assertEqual(collection.last_projection, {"mention_count": 1})
+        self.assertEqual(
+            collection.last_projection,
+            {
+                "mention_count": 1,
+                "unique_authors": 1,
+                "window_end": 1,
+                "is_spike": 1,
+            },
+        )
 
 
 if __name__ == "__main__":

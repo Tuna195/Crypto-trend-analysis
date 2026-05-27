@@ -40,6 +40,12 @@ Run local storage:
 docker compose -f infrastructure/docker-compose.yml up -d
 ```
 
+Run the Spark speed layer against the local Kafka broker:
+
+```bash
+python src/processing/speed_layer/stream_job.py --starting-offsets earliest --output-sink console
+```
+
 Deploy storage on Kubernetes:
 
 ```bash
