@@ -47,8 +47,8 @@ class MongoStorageClient:
         """Create indexes used by realtime dashboard and alert queries."""
         try:
             self.db.tweets.create_index([("coin", ASCENDING), ("created_at", DESCENDING)])
-            self.db.sentiment_metrics.create_index([("coin", ASCENDING), ("window_start", DESCENDING)])
-            self.db.trend_spikes.create_index([("keyword", ASCENDING), ("detected_at", DESCENDING)])
+            self.db.batch_sentiment_metrics.create_index([("coin", ASCENDING), ("window_start", DESCENDING)])
+            self.db.batch_trend_spikes.create_index([("keyword", ASCENDING), ("detected_at", DESCENDING)])
             self.db.market_prices.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
             self.db.alerts.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
         except PyMongoError as exc:
@@ -107,7 +107,7 @@ class MongoStorageClient:
         if retail_metrics:
             doc.update({f"retail_{k}": v for k, v in retail_metrics.items()})
             
-        return self._insert_one(self.db.sentiment_metrics, doc)
+        return self._insert_one(self.db.batch_sentiment_metrics, doc)
 
     def save_trend_spike(
         self,
@@ -116,6 +116,8 @@ class MongoStorageClient:
         baseline_count: float,
         z_score: float,
         related_coins: list[str],
+        window_start: Optional[datetime] = None,
+        window_end: Optional[datetime] = None,
         detected_at: Optional[datetime] = None,
     ) -> str:
         """Store detected trend spike (altcoin keyword or category)."""
@@ -125,10 +127,12 @@ class MongoStorageClient:
             "baseline_count": baseline_count,
             "z_score": z_score,
             "related_coins": [c.upper().replace("$", "") for c in related_coins],
+            "window_start": window_start,
+            "window_end": window_end,
             "detected_at": detected_at or datetime.utcnow(),
             "created_at": datetime.utcnow(),
         }
-        return self._insert_one(self.db.trend_spikes, doc)
+        return self._insert_one(self.db.batch_trend_spikes, doc)
 
     def save_alert(
         self,

@@ -126,7 +126,7 @@ def fetch_yesterday_avg_mentions(mongo: MongoStorageClient) -> dict[str, float]:
     end       = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
 
     try:
-        docs = list(mongo.db.sentiment_metrics.find(
+        docs = list(mongo.db.batch_sentiment_metrics.find(
             {"window_start": {"$gte": start, "$lte": end}},
             {"_id": 0, "coin": 1, "mention_count": 1},
         ))
@@ -743,6 +743,8 @@ def run_spark_job(args: argparse.Namespace) -> int:
                     baseline_count = yesterday_avg,
                     z_score        = (mention_count - yesterday_avg) / max(yesterday_avg, 1),
                     related_coins  = [coin],
+                    window_start   = time_window,
+                    window_end     = window_end,
                     detected_at    = now_utc,
                 )
             except Exception as exc:
