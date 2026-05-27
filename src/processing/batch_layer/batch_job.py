@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import os
+import sys
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYTHONUNBUFFERED"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(), override=True)
+
 import argparse
 import json
+import re
+import pyarrow
 import logging
-import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,7 +41,7 @@ from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
 
 # Constants
 HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
-HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/*/*/*/*.jsonl"
+HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
 BULLISH_THRESHOLD      =  0.05
@@ -427,6 +437,23 @@ def _raw_schema():
     ])
 
 
+_global_spam_filter = None
+_global_sentiment_analyzer = None
+
+def get_spam_filter():
+    global _global_spam_filter
+    if _global_spam_filter is None:
+        from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
+        _global_spam_filter = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
+    return _global_spam_filter
+
+def get_sentiment_analyzer():
+    global _global_sentiment_analyzer
+    if _global_sentiment_analyzer is None:
+        from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
+        _global_sentiment_analyzer = SentimentAnalyzer()
+    return _global_sentiment_analyzer
+
 def _filter_udf():
     filter_result_type = T.StructType([
         T.StructField("is_spam",    T.BooleanType(),            True),
@@ -436,7 +463,7 @@ def _filter_udf():
     ])
 
     def _fn(content, username, eng, weight):
-        f = BotSpamFilter(spam_threshold=0.4, bot_threshold=0.4)
+        f = get_spam_filter()
         r = f.detect_spam(
             content or "",
             username=username,
@@ -449,10 +476,9 @@ def _filter_udf():
 
 
 def _sentiment_udf():
-    return F.udf(
-        lambda text: float(SentimentAnalyzer().get_score(text or "")),
-        T.DoubleType(),
-    )
+    def _sent_fn(text):
+        return float(get_sentiment_analyzer().get_score(text or ""))
+    return F.udf(_sent_fn, T.DoubleType())
 
 
 def _label_udf():
@@ -469,7 +495,15 @@ def run_spark_job(args: argparse.Namespace) -> int:
     spark = (
         SparkSession.builder
         .appName("CryptoBatchJob")
-        .config("spark.sql.shuffle.partitions", "4")
+        .master("local[*]")
+        .config("spark.driver.memory", "8g")
+        .config("spark.executor.memory", "8g")
+        .config("spark.python.worker.memory", "4g")
+        .config("spark.python.worker.faulthandler.enabled", "true")
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -482,16 +516,17 @@ def run_spark_job(args: argparse.Namespace) -> int:
             args.target_date, args.target_hour or "*",
         )
     else:
-        hdfs_path = build_hdfs_path(args.target_date, args.target_hour, args.hdfs_path)
+        hdfs_path = args.hdfs_path
+        log.info("Full-scan mode → reading all partitions")
     log.info("Reading from: %s", hdfs_path)
 
     try:
         df = (
             spark.read.schema(_raw_schema())
+            .option("recursiveFileLookup", "true")
             .json(hdfs_path)
         )
         
-        # Ánh xạ schema mới (id, text, author, target_coin) sang schema cũ (tweet_id, content, username, coin)
         df = (
             df
             .withColumnRenamed("id", "tweet_id")
@@ -499,32 +534,42 @@ def run_spark_job(args: argparse.Namespace) -> int:
             .withColumnRenamed("author", "username")
             .withColumnRenamed("target_coin", "coin")
         )
+
+        if "engagement_score" not in df.columns:
+            df = df.withColumn("engagement_score", F.lit(0))
+        if "author_weight" not in df.columns:
+            df = df.withColumn("author_weight", F.lit(1.0))
     except Exception as exc:
         log.error("Failed to read HDFS path %s: %s", hdfs_path, exc)
         spark.stop()
         return 1
 
+    log.info(f"Số lượng bản ghi sau khi load: {df.count()}")
+
     # Stage 1b: Coin Extraction — explode MULTI_CRYPTO tweets into per-coin rows
-    tracked_coins_bc = spark.sparkContext.broadcast(TRACKED_COINS)
-    cashtag_pattern = r"\\$([A-Za-z]{2,10})"
+    tracked_upper = [c.upper() for c in TRACKED_COINS]
+    # regex: \\$ = literal dollar sign in Spark/Java regex
+    raw_extracted = F.expr(r"regexp_extract_all(content, '\\$([A-Za-z]{2,10})', 1)")
+    upper_extracted = F.transform(raw_extracted, lambda x: F.upper(x))
+    distinct_extracted = F.array_distinct(upper_extracted)
+    extracted_and_filtered = F.filter(distinct_extracted, lambda x: x.isin(tracked_upper))
 
-    @F.udf(T.ArrayType(T.StringType()))
-    def extract_coins_udf(content, coin):
-        """Extract individual coin tickers from tweet text."""
-        if coin and coin.upper() not in ("MULTI_CRYPTO", "MIXED"):
-            return [coin.upper().replace("$", "")]
-        import re
-        found = {m.group(1).upper() for m in re.finditer(r"\$([A-Za-z]{2,10})", content or "")}
-        matched = [c for c in found if c in tracked_coins_bc.value]
-        return matched if matched else ["UNKNOWN"]
+    # Các giá trị target_coin cần tách riêng từng coin
+    multi_coin_labels = ["MULTI_CRYPTO", "MIXED", "WHALE_SIGNAL"]
 
-    df = (
-        df
-        .withColumn("_coins", extract_coins_udf(F.col("content"), F.col("coin")))
-        .withColumn("coin", F.explode("_coins"))
-        .drop("_coins")
+    df = df.withColumn(
+        "_coins",
+        F.when(
+            F.col("coin").isNotNull() & (~F.upper(F.col("coin")).isin(*multi_coin_labels)),
+            F.array(F.regexp_replace(F.upper(F.col("coin")), r"\$", ""))
+        ).otherwise(
+            F.when(F.size(extracted_and_filtered) > 0, extracted_and_filtered)
+             .otherwise(F.array(F.lit("UNKNOWN")))
+        )
     )
-    log.info("After coin extraction & explode: %d rows", df.count())
+
+    df = df.withColumn("coin", F.explode("_coins")).drop("_coins")
+    df = df.filter(F.col("coin") != "UNKNOWN")
 
     # Stage 2: Bot/spam filter
     flt = _filter_udf()
@@ -544,7 +589,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
     )
     df_clean = df.filter(~F.col("is_spam") & ~F.col("is_bot"))
     df_spam  = df.filter( F.col("is_spam") |  F.col("is_bot"))
-
+    
     # Stage 3: Sentiment analysis
     sent_udf  = _sentiment_udf()
     label_udf = _label_udf()
@@ -588,6 +633,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("bearish_ratio",    F.round(F.col("bearish_count") / F.col("mention_count"), 4))
         .withColumn("neutral_ratio",    F.round(F.col("neutral_count") / F.col("mention_count"), 4))
     )
+    log.info("Overall coin metrics aggregated.")
 
     # Stage 4b: Aggregate metrics per (coin, time_window, author_type) — Whale vs. Retail
     segment_metrics_df = (
@@ -603,6 +649,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("seg_bullish_ratio", F.round(F.col("seg_bullish_count") / F.col("seg_mention_count"), 4))
         .withColumn("seg_bearish_ratio", F.round(F.col("seg_bearish_count") / F.col("seg_mention_count"), 4))
     )
+    
     segment_rows = {}
     for r in segment_metrics_df.collect():
         segment_rows.setdefault((r["coin"], r["time_window"]), {})[r["author_type"]] = r
@@ -631,7 +678,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         window_end    = time_window + timedelta(hours=1)
             
         mention_count = int(row["mention_count"])
-        total_eng     = int(row.get("total_engagement", 0))
+        total_eng = int(row["total_engagement"] if row["total_engagement"] is not None else 0)
         spam_count    = spam_rows.get((coin, row["time_window"]), 0)
         yesterday_avg = yesterday_avgs.get(coin, 0.0)
         spike         = is_trend_spike(mention_count, yesterday_avg, args.spike_min_count, args.spike_ratio)
@@ -708,14 +755,14 @@ def run_spark_job(args: argparse.Namespace) -> int:
             float(row["bullish_ratio"]) * 100,
             float(row["bearish_ratio"]) * 100,
             float(row["neutral_ratio"]) * 100,
-            " ⚡SPIKE" if spike else "",
+            " SPIKE" if spike else "",
         )
         log.info(
             "        whale=%d(FGI=%.1f) retail=%d(FGI=%.1f)",
             int(w.get("seg_mention_count", 0) if w else 0),
             float(w.get("seg_fear_greed", 50.0) if w else 50.0),
-            int(r.get("seg_mention_count", 0) if r else 0),
-            float(r.get("seg_fear_greed", 50.0) if r else 50.0),
+            int(r["seg_mention_count"] if r and r["seg_mention_count"] is not None else 0),
+            float(r["seg_fear_greed"] if r and r["seg_fear_greed"] is not None else 50.0),
         )
 
     duration = (datetime.now(timezone.utc) - job_start).total_seconds()
@@ -767,7 +814,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "Requires --target-date. Only reads data from this hour partition.")
 
     # MongoDB
-    p.add_argument("--mongo-uri", default="mongodb://localhost:27017",
+    p.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
                    help="MongoDB connection URI")
     p.add_argument("--mongo-db",  default="crypto_trends",
                    help="MongoDB database name")

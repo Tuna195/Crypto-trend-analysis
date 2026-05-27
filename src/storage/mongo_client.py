@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from dotenv import load_dotenv, find_dotenv
@@ -99,7 +99,7 @@ class MongoStorageClient:
             "total_engagement": total_engagement,
             "window_start": window_start,
             "window_end": window_end,
-            "created_at": datetime.now(datetime.timezone.utc),
+            "created_at": datetime.now(timezone.utc),
         }
         
         if whale_metrics:
@@ -144,7 +144,7 @@ class MongoStorageClient:
             "message": message,
             "payload": payload or {},
             "status": "open",
-            "created_at": datetime.now(datetime.timezone.utc),
+            "created_at": datetime.now(timezone.utc),
         }
         return self._insert_one(self.db.alerts, doc)
 
