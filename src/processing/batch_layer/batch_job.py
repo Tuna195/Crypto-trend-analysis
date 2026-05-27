@@ -38,6 +38,9 @@ BULLISH_THRESHOLD      =  0.05
 BEARISH_THRESHOLD      = -0.05
 WHALE_WEIGHT_THRESHOLD = 2.0   # author_weight >= this → whale, else retail
 
+# Tracked coins — used to extract individual coins from MULTI_CRYPTO tweets
+TRACKED_COINS = {"BTC", "ETH", "SOL", "XRP", "ADA", "BNB", "DOGE", "AVAX"}
+
 # Logger
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +50,20 @@ logging.basicConfig(
 log = logging.getLogger("batch_job")
 
 # SHARED HELPERS
+
+import re
+_CASHTAG_RE = re.compile(r"\$([A-Za-z]{2,10})")
+
+def extract_coins_from_text(text: str) -> list[str]:
+    """Extract known coin tickers from tweet text via $TICKER patterns.
+
+    Returns a deduplicated list of uppercase coin symbols found in the text.
+    If no known coin is found, returns ["UNKNOWN"].
+    """
+    found = {m.group(1).upper() for m in _CASHTAG_RE.finditer(text or "")}
+    matched = [c for c in found if c in TRACKED_COINS]
+    return matched if matched else ["UNKNOWN"]
+
 
 def classify_sentiment(score: float) -> str:
     """Map VADER compound score → bullish / neutral / bearish."""
@@ -220,19 +237,29 @@ def run_demo(args: argparse.Namespace) -> int:
 
     for tweet in raw_tweets:
         content  = tweet.get("content") or tweet.get("text", "")
-        username = tweet.get("username", "")
+        username = tweet.get("username") or tweet.get("author", "")
         eng      = int(tweet.get("engagement_score", 0))
         weight   = float(tweet.get("author_weight", 1.0))
+        raw_coin = tweet.get("coin") or tweet.get("target_coin", "MIXED")
 
-        result     = bot_filter.detect_spam(content, username, eng, weight)
-        tweet_copy = dict(tweet)
-        tweet_copy.update({
-            "is_spam":        result.is_spam,
-            "is_bot":         result.is_bot,
-            "spam_score":     round(result.total_score, 4),
-            "filter_reasons": result.reasons,
-        })
-        (spam_tweets if (result.is_spam or result.is_bot) else clean_tweets).append(tweet_copy)
+        # Nếu target_coin là MULTI_CRYPTO / MIXED → trích xuất từng coin riêng lẻ từ text
+        if raw_coin.upper() in ("MULTI_CRYPTO", "MIXED"):
+            coins = extract_coins_from_text(content)
+        else:
+            coins = [raw_coin.upper().replace("$", "")]
+
+        result = bot_filter.detect_spam(content, username, eng, weight)
+
+        for coin in coins:
+            tweet_copy = dict(tweet)
+            tweet_copy["coin"] = coin
+            tweet_copy.update({
+                "is_spam":        result.is_spam,
+                "is_bot":         result.is_bot,
+                "spam_score":     round(result.total_score, 4),
+                "filter_reasons": result.reasons,
+            })
+            (spam_tweets if (result.is_spam or result.is_bot) else clean_tweets).append(tweet_copy)
 
     log.info("Filter result → clean: %d | spam/bot: %d", len(clean_tweets), len(spam_tweets))
 
@@ -392,16 +419,11 @@ def run_demo(args: argparse.Namespace) -> int:
 
 def _raw_schema():
     return T.StructType([
-        T.StructField("tweet_id",         T.StringType(),              True),
-        T.StructField("user_id",          T.StringType(),              True),
-        T.StructField("username",         T.StringType(),              True),
-        T.StructField("content",          T.StringType(),              True),
+        T.StructField("id",               T.StringType(),              True),
+        T.StructField("text",             T.StringType(),              True),
         T.StructField("created_at",       T.StringType(),              True),
-        T.StructField("coin",             T.StringType(),              True),
-        T.StructField("engagement_score", T.IntegerType(),             True),
-        T.StructField("author_weight",    T.DoubleType(),              True),
-        T.StructField("hashtags",         T.ArrayType(T.StringType()), True),
-        T.StructField("cashtags",         T.ArrayType(T.StringType()), True),
+        T.StructField("author",           T.StringType(),              True),
+        T.StructField("target_coin",      T.StringType(),              True),
     ])
 
 
@@ -460,16 +482,49 @@ def run_spark_job(args: argparse.Namespace) -> int:
             args.target_date, args.target_hour or "*",
         )
     else:
-        hdfs_path = args.hdfs_path
-        log.info("Full-scan mode → reading all partitions")
+        hdfs_path = build_hdfs_path(args.target_date, args.target_hour, args.hdfs_path)
+    log.info("Reading from: %s", hdfs_path)
 
-    log.info("Reading tweets from HDFS: %s", hdfs_path)
     try:
-        df = spark.read.schema(_raw_schema()).json(hdfs_path)
+        df = (
+            spark.read.schema(_raw_schema())
+            .json(hdfs_path)
+        )
+        
+        # Ánh xạ schema mới (id, text, author, target_coin) sang schema cũ (tweet_id, content, username, coin)
+        df = (
+            df
+            .withColumnRenamed("id", "tweet_id")
+            .withColumnRenamed("text", "content")
+            .withColumnRenamed("author", "username")
+            .withColumnRenamed("target_coin", "coin")
+        )
     except Exception as exc:
         log.error("Failed to read HDFS path %s: %s", hdfs_path, exc)
         spark.stop()
         return 1
+
+    # Stage 1b: Coin Extraction — explode MULTI_CRYPTO tweets into per-coin rows
+    tracked_coins_bc = spark.sparkContext.broadcast(TRACKED_COINS)
+    cashtag_pattern = r"\\$([A-Za-z]{2,10})"
+
+    @F.udf(T.ArrayType(T.StringType()))
+    def extract_coins_udf(content, coin):
+        """Extract individual coin tickers from tweet text."""
+        if coin and coin.upper() not in ("MULTI_CRYPTO", "MIXED"):
+            return [coin.upper().replace("$", "")]
+        import re
+        found = {m.group(1).upper() for m in re.finditer(r"\$([A-Za-z]{2,10})", content or "")}
+        matched = [c for c in found if c in tracked_coins_bc.value]
+        return matched if matched else ["UNKNOWN"]
+
+    df = (
+        df
+        .withColumn("_coins", extract_coins_udf(F.col("content"), F.col("coin")))
+        .withColumn("coin", F.explode("_coins"))
+        .drop("_coins")
+    )
+    log.info("After coin extraction & explode: %d rows", df.count())
 
     # Stage 2: Bot/spam filter
     flt = _filter_udf()
@@ -484,7 +539,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("is_bot",         F.col("_f.is_bot"))
         .withColumn("spam_score",     F.col("_f.spam_score"))
         .withColumn("filter_reasons", F.col("_f.reasons"))
-        .withColumn("time_window",    F.date_trunc("hour", F.to_timestamp("created_at")))
+        .withColumn("time_window",    F.date_trunc("hour", F.to_timestamp("created_at", "EEE MMM dd HH:mm:ss Z yyyy")))
         .drop("_f")
     )
     df_clean = df.filter(~F.col("is_spam") & ~F.col("is_bot"))
