@@ -810,6 +810,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
                     "bearish_ratio": float(r["seg_bearish_ratio"]),
                 } if r else None
             )
+            log.info("  -> Saved %s metrics to MongoDB[batch_sentiment_metrics]", coin)
         except Exception as exc:
             log.error("Failed to save sentiment metric for %s: %s", coin, exc)
 
