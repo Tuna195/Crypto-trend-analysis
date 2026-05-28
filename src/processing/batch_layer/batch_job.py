@@ -40,7 +40,7 @@ from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
 from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
 
 # Constants
-HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
+HDFS_BASE_PATH     = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/data/crypto/raw_tweets")
 HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
@@ -914,7 +914,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # MongoDB
     p.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
                    help="MongoDB connection URI")
-    p.add_argument("--mongo-db",  default="crypto_trends",
+    p.add_argument("--mongo-db",  default=os.getenv("MONGO_DB", "crypto_trends"),
                    help="MongoDB database name")
 
     # Spike detection
