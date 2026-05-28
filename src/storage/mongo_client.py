@@ -107,8 +107,17 @@ class MongoStorageClient:
         if retail_metrics:
             doc.update({f"retail_{k}": v for k, v in retail_metrics.items()})
             
-        return self._insert_one(self.db.batch_sentiment_metrics, doc)
-
+        from pymongo import UpdateOne
+        result = self.db.batch_sentiment_metrics.update_one(
+            {
+                "coin": doc["coin"],
+                "window_start": doc["window_start"],
+                "window_end": doc["window_end"]
+            },
+            {"$set": doc},
+            upsert=True
+        )
+        return str(result.upserted_id) if result.upserted_id else "updated"
     def save_trend_spike(
         self,
         keyword: str,
