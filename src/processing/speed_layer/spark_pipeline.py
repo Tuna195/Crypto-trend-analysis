@@ -46,8 +46,27 @@ def get_tweet_schema() -> Any:
             T.StructField("hashtags", T.ArrayType(T.StringType()), True),
             T.StructField("cashtags", T.ArrayType(T.StringType()), True),
             T.StructField("like_count", T.StringType(), True),
+            T.StructField("favorites", T.StringType(), True),
+            T.StructField("favorite_count", T.StringType(), True),
+            T.StructField("likes", T.StringType(), True),
             T.StructField("retweet_count", T.StringType(), True),
+            T.StructField("retweets", T.StringType(), True),
+            T.StructField("retweetCount", T.StringType(), True),
             T.StructField("reply_count", T.StringType(), True),
+            T.StructField("replies", T.StringType(), True),
+            T.StructField("replyCount", T.StringType(), True),
+            T.StructField("quote_count", T.StringType(), True),
+            T.StructField("quotes", T.StringType(), True),
+            T.StructField("quoteCount", T.StringType(), True),
+            T.StructField("bookmark_count", T.StringType(), True),
+            T.StructField("bookmarks", T.StringType(), True),
+            T.StructField("bookmarkCount", T.StringType(), True),
+            T.StructField("followers_count", T.StringType(), True),
+            T.StructField("followers", T.StringType(), True),
+            T.StructField("followersCount", T.StringType(), True),
+            T.StructField("verified", T.StringType(), True),
+            T.StructField("is_blue_verified", T.StringType(), True),
+            T.StructField("blue_verified", T.StringType(), True),
             T.StructField("lang", T.StringType(), True),
             T.StructField("author_type", T.StringType(), True),
             T.StructField("author_weight", T.StringType(), True),
@@ -158,15 +177,80 @@ def build_stream_outputs(raw_df: SparkDataFrame) -> tuple[SparkDataFrame, SparkD
         .withColumn("username", F.coalesce(F.col("username"), F.col("author"), F.lit("unknown")))
         .withColumn("lang", F.lower(F.coalesce(F.col("lang"), F.lit("und"))))
         .withColumn("event_time", parsed_event_time)
-        .withColumn("like_count", F.coalesce(F.col("like_count").cast("int"), F.lit(0)))
+        .withColumn(
+            "like_count",
+            F.coalesce(
+                F.col("like_count").cast("int"),
+                F.col("favorites").cast("int"),
+                F.col("favorite_count").cast("int"),
+                F.col("likes").cast("int"),
+                F.lit(0),
+            ),
+        )
         .withColumn(
             "retweet_count",
-            F.coalesce(F.col("retweet_count").cast("int"), F.lit(0)),
+            F.coalesce(
+                F.col("retweet_count").cast("int"),
+                F.col("retweets").cast("int"),
+                F.col("retweetCount").cast("int"),
+                F.lit(0),
+            ),
         )
-        .withColumn("reply_count", F.coalesce(F.col("reply_count").cast("int"), F.lit(0)))
+        .withColumn(
+            "reply_count",
+            F.coalesce(
+                F.col("reply_count").cast("int"),
+                F.col("replies").cast("int"),
+                F.col("replyCount").cast("int"),
+                F.lit(0),
+            ),
+        )
+        .withColumn(
+            "quote_count",
+            F.coalesce(
+                F.col("quote_count").cast("int"),
+                F.col("quotes").cast("int"),
+                F.col("quoteCount").cast("int"),
+                F.lit(0),
+            ),
+        )
+        .withColumn(
+            "bookmark_count",
+            F.coalesce(
+                F.col("bookmark_count").cast("int"),
+                F.col("bookmarks").cast("int"),
+                F.col("bookmarkCount").cast("int"),
+                F.lit(0),
+            ),
+        )
+        .withColumn(
+            "followers_count",
+            F.coalesce(
+                F.col("followers_count").cast("int"),
+                F.col("followers").cast("int"),
+                F.col("followersCount").cast("int"),
+                F.lit(0),
+            ),
+        )
+        .withColumn(
+            "verified",
+            F.coalesce(
+                F.col("verified").cast("boolean"),
+                F.lower(F.col("verified")).isin("true", "1", "yes"),
+                F.col("is_blue_verified").cast("boolean"),
+                F.lower(F.col("is_blue_verified")).isin("true", "1", "yes"),
+                F.col("blue_verified").cast("boolean"),
+                F.lower(F.col("blue_verified")).isin("true", "1", "yes"),
+                F.lit(False),
+            ),
+        )
         .withColumn(
             "engagement_score",
-            F.col("like_count") + F.col("retweet_count") + F.col("reply_count"),
+            F.col("like_count")
+            + F.col("retweet_count")
+            + F.col("reply_count")
+            + F.col("quote_count")
+            + F.col("bookmark_count"),
         )
         .withColumn(
             "cashtags",
@@ -251,6 +335,15 @@ def build_stream_outputs(raw_df: SparkDataFrame) -> tuple[SparkDataFrame, SparkD
                 F.when(F.col("author_weight") > F.lit(1.0), F.col("user_id"))
             ).alias("influencer_authors"),
             F.sum("engagement_score").alias("engagement_score"),
+            F.sum("like_count").alias("like_count"),
+            F.sum("retweet_count").alias("retweet_count"),
+            F.sum("reply_count").alias("reply_count"),
+            F.sum("quote_count").alias("quote_count"),
+            F.sum("bookmark_count").alias("bookmark_count"),
+            F.max("followers_count").alias("max_followers_count"),
+            F.approx_count_distinct(F.when(F.col("verified"), F.col("user_id"))).alias(
+                "verified_authors"
+            ),
             F.round(F.sum("influence_score"), 2).alias("influence_score"),
             F.max("author_weight").alias("max_author_weight"),
             F.max("event_time").alias("last_seen"),
@@ -274,6 +367,13 @@ def build_stream_outputs(raw_df: SparkDataFrame) -> tuple[SparkDataFrame, SparkD
             "unique_authors",
             "influencer_authors",
             "engagement_score",
+            "like_count",
+            "retweet_count",
+            "reply_count",
+            "quote_count",
+            "bookmark_count",
+            "max_followers_count",
+            "verified_authors",
             "influence_score",
             "max_author_weight",
             "trend_score",
