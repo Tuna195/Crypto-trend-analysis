@@ -40,7 +40,7 @@ from src.processing.batch_layer.sentiment_lexicon import SentimentAnalyzer
 from src.processing.batch_layer.bot_spam_filter import BotSpamFilter
 
 # Constants
-HDFS_BASE_PATH     = "hdfs://namenode:9000/data/crypto/raw_tweets"
+HDFS_BASE_PATH     = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/data/crypto/raw_tweets")
 HDFS_RAW_PATH      = f"{HDFS_BASE_PATH}/"
 DEMO_SAMPLE_PATH   = Path(__file__).resolve().parent / "sample_data" / "batch_test_sample.jsonl"
 DEMO_COLLECTION    = "test_batch_process"
@@ -142,6 +142,66 @@ def fetch_yesterday_avg_mentions(mongo: MongoStorageClient) -> dict[str, float]:
             buckets[coin].append(count)
 
     return {coin: sum(v) / len(v) for coin, v in buckets.items()}
+
+
+def fetch_last_processed_datetime(mongo: MongoStorageClient) -> Optional[datetime]:
+    """Query MongoDB tìm window_end lớn nhất đã xử lý. Returns datetime or None."""
+    try:
+        cursor = (
+            mongo.db.batch_sentiment_metrics
+            .find({"window_end": {"$exists": True, "$ne": None}}, {"_id": 0, "window_end": 1})
+            .sort("window_end", -1)
+            .limit(1)
+        )
+        result = next(cursor, None)
+        if result and result.get("window_end"):
+            dt = result["window_end"]
+            log.info("Last processed window_end: %s", dt)
+            return dt
+    except Exception as exc:
+        log.warning("Cannot query last processed datetime from MongoDB: %s", exc)
+    return None
+
+
+def build_incremental_hdfs_paths(
+    last_processed_dt: datetime,
+    base_path: str = HDFS_BASE_PATH,
+) -> list[str]:
+    """Generate HDFS paths for unprocessed date/hour partitions.
+
+    - Ngày ranh giới (cùng ngày với last_processed_dt): chỉ sinh paths cho
+      các giờ >= giờ của window_end (vì giờ đó chưa được xử lý tiếp).
+    - Các ngày sau đó: sinh path với hour=* (đọc tất cả giờ).
+
+    Ví dụ: window_end = 2026-05-28 03:00:00
+      → Ngày 28: hour=03, 04, 05, ..., 23
+      → Ngày 29+: hour=*
+    """
+    now = datetime.now(timezone.utc)
+    last_date = last_processed_dt.date()
+    last_hour = last_processed_dt.hour  # window_end hour = first unprocessed hour
+    end_date = now.date()
+
+    if last_date > end_date:
+        return []
+
+    paths = []
+    current_date = last_date
+
+    while current_date <= end_date:
+        date_str = current_date.strftime("%Y-%m-%d")
+
+        if current_date == last_date:
+            # Ngày ranh giới: chỉ lấy từ giờ chưa xử lý trở đi
+            for h in range(last_hour, 24):
+                paths.append(build_hdfs_path(date_str, f"{h:02d}", base_path))
+        else:
+            # Ngày mới hoàn toàn: lấy tất cả giờ
+            paths.append(build_hdfs_path(date_str, None, base_path))
+
+        current_date += timedelta(days=1)
+
+    return paths
 
 
 def is_trend_spike(
@@ -504,29 +564,63 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
         .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # Stage 1: Load raw tweets from HDFS (with partition pruning)
+    # Stage 1: Load raw tweets from HDFS (with incremental detection)
+    mongo_cfg_check = MongoConfig(uri=args.mongo_uri, database=args.mongo_db)
+    mongo_check     = MongoStorageClient(mongo_cfg_check)
+
     if args.target_date:
-        hdfs_path = build_hdfs_path(args.target_date, args.target_hour)
+        hdfs_paths = [build_hdfs_path(args.target_date, args.target_hour)]
         log.info(
-            "Incremental mode → date=%s hour=%s",
+            "Manual mode → date=%s hour=%s",
             args.target_date, args.target_hour or "*",
         )
     else:
-        hdfs_path = args.hdfs_path
-        log.info("Full-scan mode → reading all partitions")
-    log.info("Reading from: %s", hdfs_path)
+        last_dt = fetch_last_processed_datetime(mongo_check)
+        if last_dt:
+            hdfs_paths = build_incremental_hdfs_paths(last_dt)
+            if not hdfs_paths:
+                log.info("No new data to process. Last window_end: %s", last_dt)
+                mongo_check.close()
+                spark.stop()
+                return 0
+            log.info(
+                "Incremental mode → %d path(s) from %s to now",
+                len(hdfs_paths), last_dt,
+            )
+        else:
+            hdfs_paths = [args.hdfs_path]
+            log.info("First run (no history) → full-scan mode")
+
+    mongo_check.close()
+
+    valid_dfs = []
+    for p in hdfs_paths:
+        log.info("Reading from: %s", p)
+        try:
+            _df = (
+                spark.read.schema(_raw_schema())
+                .option("recursiveFileLookup", "true")
+                .json(p)
+            )
+            valid_dfs.append(_df)
+        except Exception as exc:
+            log.warning("Skip HDFS folder that occur error (maybe no data): %s", exc)
+
+    if not valid_dfs:
+        log.warning("No new data to process. Please craw new data !")
+        spark.stop()
+        return 0
+
+    import functools
+    from pyspark.sql import DataFrame
+    df = functools.reduce(DataFrame.unionByName, valid_dfs)
 
     try:
-        df = (
-            spark.read.schema(_raw_schema())
-            .option("recursiveFileLookup", "true")
-            .json(hdfs_path)
-        )
-        
         df = (
             df
             .withColumnRenamed("id", "tweet_id")
@@ -540,7 +634,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         if "author_weight" not in df.columns:
             df = df.withColumn("author_weight", F.lit(1.0))
     except Exception as exc:
-        log.error("Failed to read HDFS path %s: %s", hdfs_path, exc)
+        log.error("Failed to process HDFS data schema: %s", exc)
         spark.stop()
         return 1
 
@@ -548,7 +642,6 @@ def run_spark_job(args: argparse.Namespace) -> int:
 
     # Stage 1b: Coin Extraction — explode MULTI_CRYPTO tweets into per-coin rows
     tracked_upper = [c.upper() for c in TRACKED_COINS]
-    # regex: \\$ = literal dollar sign in Spark/Java regex
     raw_extracted = F.expr(r"regexp_extract_all(content, '\\$([A-Za-z]{2,10})', 1)")
     upper_extracted = F.transform(raw_extracted, lambda x: F.upper(x))
     distinct_extracted = F.array_distinct(upper_extracted)
@@ -584,7 +677,7 @@ def run_spark_job(args: argparse.Namespace) -> int:
         .withColumn("is_bot",         F.col("_f.is_bot"))
         .withColumn("spam_score",     F.col("_f.spam_score"))
         .withColumn("filter_reasons", F.col("_f.reasons"))
-        .withColumn("time_window",    F.date_trunc("hour", F.to_timestamp("created_at", "EEE MMM dd HH:mm:ss Z yyyy")))
+        .withColumn("time_window",    F.date_format(F.date_trunc("hour", F.to_timestamp("created_at", "EEE MMM dd HH:mm:ss Z yyyy")), "yyyy-MM-dd HH:mm:ss"))
         .drop("_f")
     )
     df_clean = df.filter(~F.col("is_spam") & ~F.col("is_bot"))
@@ -672,9 +765,12 @@ def run_spark_job(args: argparse.Namespace) -> int:
     # Stage 6: Save to MongoDB
     for row in coin_rows:
         coin          = row["coin"]
-        time_window   = row["time_window"]
-        if time_window is None:
+        time_window_str = row["time_window"]
+        if time_window_str is None:
             time_window = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        else:
+            time_window = datetime.strptime(time_window_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            
         window_end    = time_window + timedelta(hours=1)
             
         mention_count = int(row["mention_count"])
@@ -818,7 +914,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # MongoDB
     p.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
                    help="MongoDB connection URI")
-    p.add_argument("--mongo-db",  default="crypto_trends",
+    p.add_argument("--mongo-db",  default=os.getenv("MONGO_DB", "crypto_trends"),
                    help="MongoDB database name")
 
     # Spike detection
