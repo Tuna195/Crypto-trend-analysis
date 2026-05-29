@@ -1,0 +1,27 @@
+# ============================================================
+# requirements-ingestion.txt
+# Chỉ chứa thư viện cần thiết cho layer ingestion:
+#   - twitter_client.py
+#   - whale_client.py
+#   - historical_scraper.py
+#   - kafka_to_hdfs.py
+#   - kafka_connection.py
+#   - api_helper.py
+# ============================================================
+
+# Kết nối và gửi/nhận Kafka
+kafka-python==2.3.1
+
+# Ghi dữ liệu lên HDFS qua WebHDFS
+hdfs==2.7.3
+
+# Gọi RapidAPI lấy tweets
+requests==2.32.3
+
+# Đọc biến môi trường từ file .env
+python-dotenv==1.0.1
+
+# Tiện ích
+tqdm==4.67.3
+tzdata==2026.1
+urllib3==2.6.3
