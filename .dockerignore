@@ -1,8 +1,44 @@
-.git
-venv
-__pycache__
-*.pyc
-minikube-linux-amd64
-docs
-infrastructure
+# .dockerignore
+# Liệt kê những thứ KHÔNG copy vào Docker image khi build
+
+# Biến môi trường — KHÔNG bao giờ nhúng vào image
 .env
+*.env
+
+# Chứng chỉ SSL — được inject qua K8s Secret, không nhúng vào image
+src/ingestion/certs/
+
+# File debug/test — không cần trong production
+src/ingestion/debug_api.json
+src/ingestion/test_request.json
+src/ingestion/kafka_consumer_test.py
+src/ingestion/whales_cache.json
+
+# Log files
+src/ingestion/logs/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.Python
+
+# Virtual environment
+venv/
+.venv/
+
+# Infrastructure (không cần trong container)
+infrastructure/
+
+# Data và docs
+data/
+docs/
+
+# Git
+.git/
+.gitignore
+minikube-linux-amd64
+
+# IDE
+.vscode/
+.idea/

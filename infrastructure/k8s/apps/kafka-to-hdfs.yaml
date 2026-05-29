@@ -1,0 +1,99 @@
+# =============================================================================
+# FILE: kafka-to-hdfs.yaml
+#
+# Chứa 1 object:
+#   Deployment — kafka_to_hdfs.py (chạy liên tục, không dừng)
+#
+# Lý do dùng Deployment thay vì CronJob:
+#   kafka_to_hdfs.py sử dụng vòng lặp while True + consumer.poll() để
+#   lắng nghe message từ Kafka theo thời gian thực. Nếu dùng CronJob,
+#   pod sẽ tắt giữa các lần chạy và message từ Kafka sẽ bị trễ tích lũy.
+#   Deployment đảm bảo pod luôn online và tự khởi động lại nếu crash.
+#
+# Offset management:
+#   Script dùng enable_auto_commit=False và tự commit sau khi ghi HDFS thành
+#   công → at-least-once delivery, không mất dữ liệu dù pod restart.
+#
+# Yêu cầu trước khi apply:
+#   - Đã tạo 2 secret: ingestion-env-secret và kafka-ssl-secret (xem secrets.yaml)
+#   - HDFS namenode và datanode đang chạy và healthy
+#   - Đã build và load Docker image vào Kind cluster:
+#       docker build -t crypto-ingestion:latest .
+#       kind load docker-image crypto-ingestion:latest --name <tên-cluster>
+#
+# Cách apply:
+#   kubectl apply -f infrastructure/k8s/apps/kafka-to-hdfs.yaml
+#
+# Kiểm tra:
+#   kubectl get deploy -n crypto-trend
+#   kubectl logs deploy/kafka-to-hdfs -n crypto-trend -f
+# =============================================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-to-hdfs
+  namespace: crypto-trend
+  labels:
+    app: kafka-to-hdfs
+    type: streaming-sink
+spec:
+  # Chỉ 1 replica — Kafka consumer group đảm bảo không đọc trùng
+  # Nếu tăng lên 2+, mỗi pod sẽ nhận một partition riêng (cần cấu hình Kafka partition >= replicas)
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-to-hdfs
+  template:
+    metadata:
+      labels:
+        app: kafka-to-hdfs
+    spec:
+      containers:
+        - name: kafka-to-hdfs
+          image: crypto-ingestion:latest
+          imagePullPolicy: Never  # Kind: dùng image đã load local
+          command: ["python", "src/ingestion/kafka_to_hdfs.py"]
+
+          # Nạp toàn bộ biến môi trường từ Secret (Kafka host, HDFS URL, topics...)
+          envFrom:
+            - secretRef:
+                name: ingestion-env-secret
+
+          # Ghi đè đường dẫn certs để trỏ vào volume mount
+          env:
+            - name: KAFKA_CERTS_DIR
+              value: "/etc/kafka/certs"
+
+          # Mount 3 file cert PEM vào /etc/kafka/certs/
+          volumeMounts:
+            - name: kafka-ssl-certs
+              mountPath: /etc/kafka/certs
+              readOnly: true
+
+          # Kiểm tra pod còn sống không (liveness probe)
+          # kafka_to_hdfs.py không expose HTTP, dùng exec để check process
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "kafka_to_hdfs.py"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+
+          # Giới hạn tài nguyên — kafka_to_hdfs.py rất nhẹ (Python thuần)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      volumes:
+        - name: kafka-ssl-certs
+          secret:
+            secretName: kafka-ssl-secret
+
+      # Nếu pod crash, K8s tự restart sau backoff nhỏ (mặc định: 10s, 20s, 40s...)
+      restartPolicy: Always

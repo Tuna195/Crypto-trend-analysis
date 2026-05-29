@@ -1,45 +1,171 @@
-apiVersion: apps/v1
-kind: Deployment
+# =============================================================================
+# FILE: ingestion.yaml
+#
+# Chứa 3 object:
+#   1. Job          — historical_scraper.py   (chạy 1 lần duy nhất khi apply)
+#   2. CronJob      — twitter_client.py       (chạy mỗi 1 giờ)
+#   3. CronJob      — whale_client.py         (chạy mỗi 3 giờ)
+#
+# Yêu cầu trước khi apply:
+#   - Đã tạo 2 secret: ingestion-env-secret và kafka-ssl-secret (xem secrets.yaml)
+#   - Đã build và load Docker image vào Kind cluster:
+#       docker build -t crypto-ingestion:latest .
+#       kind load docker-image crypto-ingestion:latest --name <tên-cluster>
+#   - Namespace crypto-trend đã được tạo:
+#       kubectl apply -f infrastructure/k8s/storage/namespace.yaml
+#
+# Cách apply:
+#   kubectl apply -f infrastructure/k8s/apps/ingestion.yaml
+#
+# Kiểm tra:
+#   kubectl get job,cronjob -n crypto-trend
+#   kubectl logs job/historical-scraper -n crypto-trend -f
+# =============================================================================
+
+---
+# ─────────────────────────────────────────────────────────────────
+# 1. JOB: historical_scraper.py — Chạy 1 lần duy nhất
+#    Mục đích: Cào toàn bộ dữ liệu lịch sử trước khi hệ thống đi vào
+#    vận hành định kỳ. Job tự động kết thúc sau khi script hoàn tất.
+# ─────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: crypto-ingestion
+  name: historical-scraper
   namespace: crypto-trend
   labels:
-    app: crypto-ingestion
+    app: historical-scraper
+    type: one-time-job
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: crypto-ingestion
+  # Không tự động retry nếu thất bại (tránh lãng phí API quota)
+  backoffLimit: 0
+  # Tự xóa pod log sau 7 ngày
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       labels:
-        app: crypto-ingestion
+        app: historical-scraper
     spec:
+      restartPolicy: Never
       containers:
-        - name: ingestion
-          image: crypto-app:latest
-          imagePullPolicy: Never
-          command: ["python", "src/ingestion/main_ingestion.py"]
+        - name: historical-scraper
+          image: crypto-ingestion:latest
+          imagePullPolicy: Never  # Kind: dùng image đã load local
+          command: ["python", "src/ingestion/historical_scraper.py"]
+          # Nạp toàn bộ biến môi trường từ Secret
+          envFrom:
+            - secretRef:
+                name: ingestion-env-secret
+          # Ghi đè đường dẫn certs để trỏ vào volume mount
           env:
-            # Kết nối tới MongoDB ở cùng namespace
-            - name: MONGO_URI
-              value: "mongodb://mongodb:27017"
-            - name: MONGO_DB
-              value: "crypto_trends"
-            # Kết nối tới HDFS ở cùng namespace
-            - name: WEBHDFS_URL
-              value: "http://namenode:9870"
-            - name: HDFS_USER
-              value: "hdfs"
-            - name: HDFS_BASE_DIR
-              value: "/data/crypto"
-            
-            # --- CÁC BIẾN CẦN BẠN BỔ SUNG ---
-            - name: RAPIDAPI_KEY
-              value: "ĐIỀN_KEY_CỦA_BẠN_VÀO_ĐÂY"
-            - name: RAPIDAPI_HOST
-              value: "twitter-api45.p.rapidapi.com"
-            - name: KAFKA_HOST
-              value: "ĐIỀN_HOST_AIVEN_KAFKA_VÀO_ĐÂY"
-            - name: KAFKA_PORT
-              value: "ĐIỀN_PORT_KAFKA"
+            - name: KAFKA_CERTS_DIR
+              value: "/etc/kafka/certs"
+          # Mount 3 file cert PEM vào /etc/kafka/certs/
+          volumeMounts:
+            - name: kafka-ssl-certs
+              mountPath: /etc/kafka/certs
+              readOnly: true
+      volumes:
+        - name: kafka-ssl-certs
+          secret:
+            secretName: kafka-ssl-secret
+
+---
+# ─────────────────────────────────────────────────────────────────
+# 2. CRONJOB: twitter_client.py — Quét xu hướng thị trường mỗi 1 giờ
+#    Lịch: mỗi đầu giờ (0 * * * *)
+#    Ví dụ: 01:00, 02:00, 03:00, ...
+# ─────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-trend-ingestion
+  namespace: crypto-trend
+  labels:
+    app: market-trend-ingestion
+    type: scheduled-crawl
+spec:
+  # Chạy vào đầu mỗi giờ
+  schedule: "0 * * * *"
+  # Nếu job trước chưa xong thì bỏ qua lần này (tránh chồng chéo request)
+  concurrencyPolicy: Forbid
+  # Giữ lại log của 3 lần chạy gần nhất để debug
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Tự động retry tối đa 2 lần nếu thất bại (API timeout, mạng...)
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: market-trend-ingestion
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: market-trend-ingestion
+              image: crypto-ingestion:latest
+              imagePullPolicy: Never
+              command: ["python", "src/ingestion/twitter_client.py"]
+              envFrom:
+                - secretRef:
+                    name: ingestion-env-secret
+              env:
+                - name: KAFKA_CERTS_DIR
+                  value: "/etc/kafka/certs"
+              volumeMounts:
+                - name: kafka-ssl-certs
+                  mountPath: /etc/kafka/certs
+                  readOnly: true
+          volumes:
+            - name: kafka-ssl-certs
+              secret:
+                secretName: kafka-ssl-secret
+
+---
+# ─────────────────────────────────────────────────────────────────
+# 3. CRONJOB: whale_client.py — Theo dõi cá voi mỗi 3 giờ
+#    Lịch: mỗi 3 giờ bắt đầu từ 00:00 (0 */3 * * *)
+#    Ví dụ: 00:00, 03:00, 06:00, 09:00, ...
+# ─────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: whale-tracking-ingestion
+  namespace: crypto-trend
+  labels:
+    app: whale-tracking-ingestion
+    type: scheduled-crawl
+spec:
+  schedule: "0 */3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: whale-tracking-ingestion
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: whale-tracking-ingestion
+              image: crypto-ingestion:latest
+              imagePullPolicy: Never
+              command: ["python", "src/ingestion/whale_client.py"]
+              envFrom:
+                - secretRef:
+                    name: ingestion-env-secret
+              env:
+                - name: KAFKA_CERTS_DIR
+                  value: "/etc/kafka/certs"
+              volumeMounts:
+                - name: kafka-ssl-certs
+                  mountPath: /etc/kafka/certs
+                  readOnly: true
+          volumes:
+            - name: kafka-ssl-certs
+              secret:
+                secretName: kafka-ssl-secret
