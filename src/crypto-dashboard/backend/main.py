@@ -39,6 +39,9 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
+
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB  = os.getenv("MONGO_DB",  "crypto_trends")
 

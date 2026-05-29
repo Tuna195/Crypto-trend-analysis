@@ -37,6 +37,7 @@ metadata:
     app: historical-scraper
     type: one-time-job
 spec:
+  suspend: true
   # Không tự động retry nếu thất bại (tránh lãng phí API quota)
   backoffLimit: 0
   # Tự xóa pod log sau 7 ngày
@@ -50,7 +51,7 @@ spec:
       containers:
         - name: historical-scraper
           image: crypto-ingestion:latest
-          imagePullPolicy: Never  # Kind: dùng image đã load local
+          imagePullPolicy: Never # Kind: dùng image đã load local
           command: ["python", "src/ingestion/historical_scraper.py"]
           # Nạp toàn bộ biến môi trường từ Secret
           envFrom:

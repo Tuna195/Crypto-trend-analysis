@@ -14,6 +14,7 @@ kafka-python==2.3.1
 
 # Ghi dữ liệu lên HDFS qua WebHDFS
 hdfs==2.7.3
+pymongo==4.7.2
 
 # Gọi RapidAPI lấy tweets
 requests==2.32.3
