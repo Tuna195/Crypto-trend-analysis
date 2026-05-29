@@ -1,0 +1,101 @@
+# =============================================================================
+# FILE: speed-layer.yaml
+#
+# Deployment — Spark Structured Streaming speed layer.
+#
+# Luồng:
+#   Aiven Kafka Cloud -> stream_job.py -> MongoDB speed_trend_metrics/speed_bad_records
+#
+# Yêu cầu trước khi apply:
+#   - Namespace crypto-trend đã tồn tại.
+#   - Secret ingestion-env-secret có Kafka env và MONGO_URI/MONGO_DB.
+#   - Secret kafka-ssl-secret có ca.pem, service.cert, service.key.
+#   - MongoDB service đang chạy nếu dùng MONGO_URI nội cluster.
+#   - Image đã build và load vào Kind:
+#       docker build -t crypto-ingestion:latest .
+#       kind load docker-image crypto-ingestion:latest --name <ten-cluster>
+#
+# Cách apply:
+#   kubectl apply -f infrastructure/k8s/apps/speed-layer.yaml
+#
+# Kiểm tra:
+#   kubectl get deploy,pod -n crypto-trend -l app=speed-layer
+#   kubectl logs deploy/speed-layer -n crypto-trend -f
+# =============================================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speed-layer
+  namespace: crypto-trend
+  labels:
+    app: speed-layer
+    type: streaming-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: speed-layer
+  template:
+    metadata:
+      labels:
+        app: speed-layer
+    spec:
+      containers:
+        - name: speed-layer
+          image: crypto-ingestion:latest
+          imagePullPolicy: Never
+          command:
+            - python
+            - src/processing/speed_layer/stream_job.py
+            - --starting-offsets
+            - latest
+            - --output-sink
+            - mongo
+            - --checkpoint-location
+            - /tmp/crypto_trend_kafka_checkpoint
+          envFrom:
+            - secretRef:
+                name: ingestion-env-secret
+          env:
+            - name: KAFKA_CERTS_DIR
+              value: "/etc/kafka/certs"
+            - name: SPARK_LOCAL_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: PYSPARK_SUBMIT_ARGS
+              value: "--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1 pyspark-shell"
+            - name: HOME
+              value: "/home/appuser"
+          volumeMounts:
+            - name: kafka-ssl-certs
+              mountPath: /etc/kafka/certs
+              readOnly: true
+            - name: spark-checkpoint
+              mountPath: /tmp/crypto_trend_kafka_checkpoint
+            - name: ivy-cache
+              mountPath: /home/appuser/.ivy2.5.2
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "stream_job.py"]
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+      volumes:
+        - name: kafka-ssl-certs
+          secret:
+            secretName: kafka-ssl-secret
+        - name: spark-checkpoint
+          emptyDir: {}
+        - name: ivy-cache
+          emptyDir: {}
+      restartPolicy: Always

@@ -15,6 +15,11 @@ kafka-python==2.3.1
 # Ghi dữ liệu lên HDFS qua WebHDFS
 hdfs==2.7.3
 
+# Spark speed layer và MongoDB sink
+pyspark==4.1.1
+py4j==0.10.9.9
+pymongo==4.9.1
+
 # Gọi RapidAPI lấy tweets
 requests==2.32.3
 
