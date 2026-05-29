@@ -82,140 +82,13 @@ function NeonBadge({ children, color = C.neonTeal, small = false }) {
   );
 }
 
-// layer: "speed" | "batch" | "both" | undefined
-function SectionTitle({ children, layer }) {
-  const layerCfg = {
-    speed: { label: "SPEED", color: C.neonTeal, title: "Dữ liệu real-time từ Spark Streaming → speed_trend_metrics" },
-    batch: { label: "BATCH", color: C.electricBl, title: "Dữ liệu tổng hợp từ Spark Batch Job → batch_sentiment_metrics" },
-    both: { label: "BATCH + SPEED", color: C.neonPurple, title: "Kết hợp cả hai layer" },
-  };
-  const cfg = layer ? layerCfg[layer] : null;
-
+function SectionTitle({ children }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
       <div style={{ width: 3, height: 18, borderRadius: 2, background: C.electricBl, flexShrink: 0 }} />
       <span style={{ fontSize: 12, fontWeight: 600, color: C.textPri, letterSpacing: "0.08em", textTransform: "uppercase" }}>
         {children}
       </span>
-      {cfg && (
-        <span title={cfg.title} style={{
-          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-          background: cfg.color + "18", color: cfg.color,
-          border: `0.5px solid ${cfg.color}44`,
-          letterSpacing: "0.06em", cursor: "help",
-        }}>
-          ⬡ {cfg.label}
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ─── Pipeline Status Panel ────────────────────────────────────────────────────
-// Hiển thị trạng thái hai layer: data có trong DB không, bao nhiêu records
-function PipelineStatus() {
-  const { data: summary } = useSummary();
-  const { data: batchData } = useBatchTrends(24, 1);
-  const { data: speedData } = useSpeedTrends(1, 1, false);
-
-  const batchAlive = batchData != null && batchData.length > 0;
-  const speedAlive = speedData != null && speedData.length > 0;
-
-  const layers = [
-    {
-      id: "batch",
-      label: "Batch Layer",
-      alive: batchAlive,
-      color: C.electricBl,
-      desc: batchAlive
-        ? `batch_sentiment_metrics có data · Fear&Greed avg ${summary ? fmt(summary.avg_fear_greed) : "…"}`
-        : "Chưa có data — cần chạy batch_job.py",
-      cmd: "python src/processing/batch_layer/batch_job.py --demo",
-      collections: ["batch_sentiment_metrics", "batch_trend_spikes", "alerts"],
-      refreshRate: "Định kỳ (thường mỗi giờ hoặc thủ công)",
-    },
-    {
-      id: "speed",
-      label: "Speed Layer",
-      alive: speedAlive,
-      color: C.neonTeal,
-      desc: speedAlive
-        ? `speed_trend_metrics có data · ${summary ? fmtInt(summary.total_mentions_1h) : "…"} mentions/1h`
-        : "Chưa có data — cần chạy stream_job.py",
-      cmd: "python src/processing/speed_layer/stream_job.py --demo",
-      collections: ["speed_trend_metrics", "speed_bad_records"],
-      refreshRate: "Real-time (5-phút micro-batch từ Spark Streaming)",
-    },
-  ];
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-      {layers.map(layer => (
-        <div key={layer.id} style={{
-          background: C.bgSurface,
-          border: `0.5px solid ${layer.alive ? layer.color + "55" : C.border}`,
-          borderRadius: 12, padding: "16px 20px",
-          display: "flex", gap: 14, alignItems: "flex-start",
-        }}>
-          {/* Status dot */}
-          <div style={{
-            width: 36, height: 36, borderRadius: 18, flexShrink: 0,
-            background: layer.alive ? layer.color + "18" : C.bgElevated,
-            border: `0.5px solid ${layer.alive ? layer.color + "55" : C.border}`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16,
-          }}>
-            {layer.alive ? "✅" : "⭕"}
-          </div>
-
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: layer.alive ? layer.color : C.textMuted }}>
-                {layer.label}
-              </span>
-              <span style={{
-                fontSize: 9, padding: "1px 6px", borderRadius: 4, fontWeight: 700,
-                background: layer.alive ? layer.color + "18" : C.bgElevated,
-                color: layer.alive ? layer.color : C.textDim,
-                border: `0.5px solid ${layer.alive ? layer.color + "44" : C.border}`,
-              }}>
-                {layer.alive ? "● ACTIVE" : "○ INACTIVE"}
-              </span>
-            </div>
-
-            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 8 }}>{layer.desc}</div>
-
-            {/* Collections */}
-            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: layer.alive ? 0 : 8 }}>
-              {layer.collections.map(col => (
-                <code key={col} style={{
-                  fontSize: 9, padding: "1px 6px", borderRadius: 4,
-                  background: C.bgElevated, color: C.textDim,
-                  border: `0.5px solid ${C.border}`,
-                }}>
-                  {col}
-                </code>
-              ))}
-            </div>
-
-            {/* Refresh rate */}
-            <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>
-              🔄 {layer.refreshRate}
-            </div>
-
-            {/* Hướng dẫn chạy khi inactive */}
-            {!layer.alive && (
-              <div style={{
-                marginTop: 8, padding: "6px 10px", borderRadius: 6,
-                background: C.bgElevated, border: `0.5px solid ${C.border}`,
-              }}>
-                <div style={{ fontSize: 9, color: C.textDim, marginBottom: 3 }}>Lệnh khởi động:</div>
-                <code style={{ fontSize: 10, color: layer.color }}>{layer.cmd}</code>
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -259,7 +132,6 @@ function TimeFilterBar({ value, onChange, options = [1, 6, 24, 72] }) {
 }
 
 // ─── Speed Ticker Bar ─────────────────────────────────────────────────────────
-// SPEED layer — speed_trend_metrics
 function SpeedTickerBar() {
   const { data } = useSpeedTrends(1, 10, false);
   if (!data?.length) return null;
@@ -269,15 +141,6 @@ function SpeedTickerBar() {
       padding: "0 32px", height: 34,
       display: "flex", alignItems: "center", gap: 28, overflowX: "auto",
     }}>
-      {/* Label layer */}
-      <span style={{
-        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-        background: C.neonTeal + "18", color: C.neonTeal,
-        border: `0.5px solid ${C.neonTeal}44`, flexShrink: 0,
-        letterSpacing: "0.06em",
-      }}>
-        ⬡ SPEED
-      </span>
       {data.map(item => (
         <div key={item.symbol} style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
           <span style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>${item.symbol}</span>
@@ -293,25 +156,21 @@ function SpeedTickerBar() {
 }
 
 // ─── KPI Cards ────────────────────────────────────────────────────────────────
-// Card 1,2,4 → SPEED (speed_trend_metrics)
-// Card 3     → BATCH (batch_sentiment_metrics)
 function KpiCards() {
   const { data, loading, error } = useSummary();
   if (error) return <ErrorBox message={error} />;
   const cards = data ? [
-    { label: "Top Trending", value: `$${data.top_trending_coin}`, sub: `trend score ${fmt(data.top_trend_score)}`, color: C.neonTeal, layer: "speed" },
-    { label: "Mentions / 1h", value: fmtInt(data.total_mentions_1h), sub: "tweets/1h · speed_trend_metrics", color: C.electricBl, layer: "speed" },
-    { label: "Fear & Greed", value: fmt(data.avg_fear_greed), sub: fgLabel(data.avg_fear_greed), color: fgColor(data.avg_fear_greed), layer: "batch" },
-    { label: "Active Spikes", value: data.active_spikes, sub: `${data.active_alerts} alerts mở`, color: C.amber, layer: "speed" },
+    { label: "Top Trending", value: `$${data.top_trending_coin}`, sub: `trend score ${fmt(data.top_trend_score)}`, color: C.neonTeal },
+    { label: "Mentions / 1h", value: fmtInt(data.total_mentions_1h), sub: "từ speed layer", color: C.electricBl },
+    { label: "Fear & Greed", value: fmt(data.avg_fear_greed), sub: fgLabel(data.avg_fear_greed), color: fgColor(data.avg_fear_greed) },
+    { label: "Active Spikes", value: data.active_spikes, sub: `${data.active_alerts} alerts mở`, color: C.amber },
   ] : [];
-
-  const layerDot = { speed: C.neonTeal, batch: C.electricBl };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
       {loading
         ? Array(4).fill(0).map((_, i) => <SkeletonKpiCard key={i} />)
-        : cards.map(({ label, value, sub, color, layer }) => (
+        : cards.map(({ label, value, sub, color }) => (
           <div key={label} style={{
             background: C.bgSurface, border: `0.5px solid ${C.border}`, borderRadius: 12,
             padding: "20px 22px", position: "relative", overflow: "hidden",
@@ -321,16 +180,6 @@ function KpiCards() {
             onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
           >
             <div style={{ position: "absolute", top: 0, right: 0, width: 56, height: 56, borderRadius: "0 12px 0 56px", background: color + "10" }} />
-            {/* Layer badge góc trên trái */}
-            <div style={{
-              position: "absolute", top: 10, right: 10,
-              fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 3,
-              background: layerDot[layer] + "18", color: layerDot[layer],
-              border: `0.5px solid ${layerDot[layer]}33`,
-              letterSpacing: "0.05em",
-            }}>
-              ⬡ {layer.toUpperCase()}
-            </div>
             <div style={{ fontSize: 10, color: C.textMuted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color, fontFamily: "monospace", marginBottom: 5 }}>{value}</div>
             <div style={{ fontSize: 11, color: C.textDim }}>{sub}</div>
@@ -361,7 +210,7 @@ function SentimentChart({ coin }) {
   return (
     <Card style={{ flex: 1, padding: "20px 22px", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <SectionTitle layer="batch">Sentiment — {coin ? `$${coin}` : "chọn coin ↓"}</SectionTitle>
+        <SectionTitle>Sentiment — {coin ? `$${coin}` : "chọn coin ↓"}</SectionTitle>
         {coin && <TimeFilterBar value={hours} onChange={setHours} options={[1, 3, 6, 24]} />}
       </div>
 
@@ -407,7 +256,7 @@ function AlertsFeed() {
     <Card style={{ width: 300, flexShrink: 0, display: "flex", flexDirection: "column" }}>
       {/* Header cố định */}
       <div style={{ padding: "18px 20px 12px", borderBottom: `0.5px solid ${C.border}`, flexShrink: 0 }}>
-        <SectionTitle layer="batch">🚨 Alerts Feed</SectionTitle>
+        <SectionTitle>🚨 Alerts Feed</SectionTitle>
       </div>
 
       {/* Body cuộn — cố định chiều cao 320px */}
@@ -495,7 +344,7 @@ function TrendingTable({ onCoinSelect, selectedCoin }) {
   return (
     <Card style={{ overflow: "hidden" }}>
       <div style={{ padding: "18px 22px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <SectionTitle layer="batch">Trending Coins — Batch Layer</SectionTitle>
+        <SectionTitle>Trending Coins — Batch Layer</SectionTitle>
         <div style={{ marginBottom: 16 }}>
           <TimeFilterBar value={hours} onChange={setHours} options={[1, 6, 24, 72]} />
         </div>
@@ -594,7 +443,7 @@ function SpeedSpikesPanel() {
   if (loading || !data?.length) return null;
   return (
     <Card style={{ padding: "18px 22px" }}>
-      <SectionTitle layer="speed">⚡ Live Spikes — Speed Layer</SectionTitle>
+      <SectionTitle>⚡ Live Spikes — Speed Layer</SectionTitle>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
         {data.map(spike => (
           <div key={spike.symbol + spike.window_start} style={{
@@ -635,14 +484,8 @@ function ViewTrending() {
   const [selectedCoin, setSelectedCoin] = useState(null);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-
-      {/* Pipeline Status — hiển thị rõ Batch vs Speed đang active chưa */}
-      <Card style={{ padding: "16px 20px" }}>
-        <SectionTitle layer="both">Pipeline Status</SectionTitle>
-        <PipelineStatus />
-      </Card>
-
       <KpiCards />
+      {/* Chart + Alerts nằm cạnh nhau, alignItems stretch để cùng chiều cao */}
       <div style={{ display: "flex", gap: 16, alignItems: "stretch" }}>
         <SentimentChart coin={selectedCoin} />
         <AlertsFeed />
@@ -654,282 +497,78 @@ function ViewTrending() {
 }
 
 // ── View: Whales ──────────────────────────────────────────────────────────────
-//
-// NGUỒN DỮ LIỆU: batch_sentiment_metrics (collection luôn có data sau batch job)
-//   - Field whale_mention_count, whale_fear_greed, whale_bullish_ratio,
-//     whale_bearish_ratio được ghi bởi batch_job.py khi nó phân tách
-//     tweet của whale (author_weight >= 2.0) ra riêng
-//   - alerts (status=open, alert_type=whale_signal) từ save_alert()
-//
-// Ý NGHĨA: So sánh tâm lý CÁ VOI (saylor, VitalikButerin...) vs THỊ TRƯỜNG
-//   để phát hiện divergence — ví dụ: Whale đang Bullish BTC trong khi
-//   thị trường chung Bearish → tín hiệu tích lũy âm thầm.
-//
-// TẠI SAO CŨ TRỐNG? Version cũ query speed_trend_metrics — collection này
-//   chỉ có data khi Spark Streaming đang chạy thực. Giờ đổi sang
-//   batch_sentiment_metrics luôn có data sau mỗi lần chạy batch job.
-// ─────────────────────────────────────────────────────────────────────────────
-const WHALE_ACCOUNTS = ["saylor", "VitalikButerin", "elonmusk", "cz_binance", "brian_armstrong", "CryptoKaleo", "Pentosh1", "justinsuntron"];
-
 function ViewWhales() {
-  const [hours, setHours] = useState(24);
-  // Lấy từ batch_sentiment_metrics — luôn có data sau mỗi batch job chạy
-  const { data, loading, error } = useBatchTrends(hours, 20);
-
-  // Chỉ giữ những coin có whale data (whale_mention_count > 0)
-  const whaleCoins = data?.filter(row => row.avg_whale_fg != null) ?? [];
-  // Phát hiện divergence: whale vs retail ngược chiều nhau
-  const divergent = whaleCoins.filter(row =>
-    row.avg_retail_fg != null &&
-    Math.abs((row.avg_whale_fg ?? 50) - (row.avg_retail_fg ?? 50)) >= 15
-  );
+  const { data, loading, error } = useSpeedTrends(1, 20, false);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-
-      {/* ── Header giải thích ── */}
-      <div style={{
-        background: C.bgSurface, border: `0.5px solid ${C.amber}33`,
-        borderRadius: 12, padding: "18px 24px",
-        display: "flex", gap: 20, alignItems: "flex-start",
-      }}>
-        <span style={{ fontSize: 28, lineHeight: 1 }}>🐋</span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.textPri, marginBottom: 6 }}>
-            Whale Signal Monitor
-          </div>
-          <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
-            So sánh tâm lý <span style={{ color: C.amber }}>Whale</span> (influencer có <code style={{ background: C.bgElevated, padding: "0 4px", borderRadius: 3 }}>author_weight ≥ 2.0</code>: {WHALE_ACCOUNTS.join(", ")}...)
-            vs <span style={{ color: C.electricBl }}>Retail</span> (người dùng thông thường).
-            Khi whale và retail <strong style={{ color: C.neonRed }}>đi ngược chiều</strong> → tín hiệu divergence đáng chú ý.
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: C.textDim }}>
-            Nguồn: <code style={{ color: C.neonTeal }}>batch_sentiment_metrics</code> · phân tách bởi <code style={{ color: C.neonTeal }}>batch_job.py</code> · cập nhật sau mỗi batch run
-          </div>
-        </div>
-        <div style={{ flexShrink: 0 }}>
-          <TimeFilterBar value={hours} onChange={setHours} options={[6, 24, 72]} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <span style={{ fontSize: 22 }}>🐋</span>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.textPri }}>Whale Signal Monitor</div>
+          <div style={{ fontSize: 11, color: C.textMuted }}>Real-time top coins từ speed_trend_metrics — cập nhật mỗi 10s</div>
         </div>
       </div>
 
       {error && <ErrorBox message={error} />}
 
-      {/* ── Divergence alert banner ── */}
-      {!loading && divergent.length > 0 && (
-        <div style={{
-          background: C.amber + "0e", border: `0.5px solid ${C.amber}55`,
-          borderRadius: 10, padding: "12px 20px",
-          display: "flex", alignItems: "center", gap: 12,
-        }}>
-          <span style={{ fontSize: 18 }}>⚠️</span>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: C.amber, marginBottom: 3 }}>
-              Phát hiện {divergent.length} Divergence Signal
-            </div>
-            <div style={{ fontSize: 11, color: C.textMuted }}>
-              Whale và Retail đang đi ngược chiều ≥15 điểm Fear&Greed:&nbsp;
-              {divergent.map(r => (
-                <span key={r.coin} style={{ color: C.amber, fontWeight: 600 }}>${r.coin} </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Trạng thái trống có hướng dẫn ── */}
-      {!loading && !error && whaleCoins.length === 0 && (
-        <Card style={{ padding: "40px 32px", textAlign: "center" }}>
-          <div style={{ fontSize: 36, marginBottom: 16 }}>🐋</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.textPri, marginBottom: 10 }}>
-            Chưa có dữ liệu Whale
-          </div>
-          <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.8, maxWidth: 480, margin: "0 auto 20px" }}>
-            Dữ liệu whale xuất hiện sau khi pipeline dưới đây đã chạy đầy đủ:
-          </div>
-          <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, textAlign: "left" }}>
-            {[
-              { step: "1", cmd: "python src/ingestion/whale_client.py", desc: "Cào tweet từ các tài khoản whale (saylor, VitalikButerin...)" },
-              { step: "2", cmd: "python src/ingestion/kafka_to_hdfs.py", desc: "Lưu tweet từ Kafka xuống HDFS" },
-              { step: "3", cmd: "python src/processing/batch_layer/batch_job.py --demo", desc: "Chạy batch job — phân tách whale/retail sentiment" },
-            ].map(({ step, cmd, desc }) => (
-              <div key={step} style={{
-                background: C.bgElevated, border: `0.5px solid ${C.border}`,
-                borderRadius: 8, padding: "10px 16px",
-                display: "flex", gap: 12, alignItems: "flex-start",
-              }}>
-                <div style={{
-                  width: 22, height: 22, borderRadius: 11, background: C.electricBl + "20",
-                  border: `0.5px solid ${C.electricBl}44`, color: C.electricBl,
-                  fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
-                  flexShrink: 0,
-                }}>
-                  {step}
-                </div>
-                <div>
-                  <code style={{ fontSize: 11, color: C.neonTeal, display: "block", marginBottom: 3 }}>{cmd}</code>
-                  <div style={{ fontSize: 11, color: C.textMuted }}>{desc}</div>
-                </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+        {loading
+          ? Array(8).fill(0).map((_, i) => (
+            <Card key={i} style={{ padding: "16px 18px" }}>
+              <SkeletonBox w="50%" h={12} style={{ marginBottom: 10 }} />
+              <SkeletonBox w="70%" h={24} style={{ marginBottom: 8 }} />
+              <SkeletonBox w="90%" h={10} />
+            </Card>
+          ))
+          : data?.map((item, i) => (
+            <Card key={item.symbol} style={{
+              padding: "16px 18px",
+              border: item.is_spike ? `0.5px solid ${C.amber}66` : `0.5px solid ${C.border}`,
+              transition: "border-color 0.2s",
+            }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = COIN_COLORS[i % COIN_COLORS.length] + "66"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = item.is_spike ? C.amber + "66" : C.border}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: COIN_COLORS[i % COIN_COLORS.length] }}>
+                  ${item.symbol}
+                </span>
+                {item.is_spike && <NeonBadge color={C.amber} small>⚡ SPIKE</NeonBadge>}
               </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
-      {/* ── Loading skeletons ── */}
-      {loading && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-          {Array(6).fill(0).map((_, i) => (
-            <Card key={i} style={{ padding: "18px 20px" }}>
-              <SkeletonBox w="40%" h={14} style={{ marginBottom: 14 }} />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {Array(4).fill(0).map((_, j) => <SkeletonBox key={j} h={11} />)}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 0", fontSize: 11 }}>
+                <span style={{ color: C.textMuted }}>Mentions</span>
+                <span style={{ color: C.textPri, textAlign: "right", fontFamily: "monospace" }}>
+                  {fmtInt(item.mention_count)}
+                </span>
+                <span style={{ color: C.textMuted }}>Authors</span>
+                <span style={{ color: C.textPri, textAlign: "right", fontFamily: "monospace" }}>
+                  {fmtInt(item.unique_authors)}
+                </span>
+                <span style={{ color: C.textMuted }}>Influencers</span>
+                <span style={{ color: C.amber, textAlign: "right", fontFamily: "monospace" }}>
+                  {fmtInt(item.influencer_authors)}
+                </span>
+                <span style={{ color: C.textMuted }}>Trend Score</span>
+                <span style={{ color: C.neonTeal, textAlign: "right", fontFamily: "monospace" }}>
+                  {fmt(item.trend_score)}
+                </span>
+                {item.growth_rate != null && <>
+                  <span style={{ color: C.textMuted }}>Growth</span>
+                  <span style={{ color: item.growth_rate >= 3 ? C.neonRed : C.limeGreen, textAlign: "right", fontFamily: "monospace" }}>
+                    ×{fmt(item.growth_rate)}
+                  </span>
+                </>}
+              </div>
+
+              <div style={{ marginTop: 8, fontSize: 10, color: C.textDim }}>
+                {timeAgo(item.window_start)}
               </div>
             </Card>
-          ))}
-        </div>
-      )}
-
-      {/* ── Whale vs Retail cards ── */}
-      {!loading && whaleCoins.length > 0 && (
-        <>
-          {/* Legend */}
-          <div style={{ display: "flex", gap: 16, fontSize: 11 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 5, background: C.amber }} />
-              <span style={{ color: C.textMuted }}>Whale (author_weight ≥ 2.0)</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 5, background: C.electricBl }} />
-              <span style={{ color: C.textMuted }}>Retail (author_weight &lt; 2.0)</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 5, background: C.neonRed }} />
-              <span style={{ color: C.textMuted }}>Divergence ≥ 15 điểm</span>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-            {whaleCoins.map((row, i) => {
-              const whaleFG = row.avg_whale_fg ?? 50;
-              const retailFG = row.avg_retail_fg ?? null;
-              const diff = retailFG != null ? Math.abs(whaleFG - retailFG) : 0;
-              const isDivergent = diff >= 15;
-              const whaleLeads = retailFG != null && whaleFG > retailFG;
-
-              return (
-                <Card key={row.coin} style={{
-                  padding: "18px 20px",
-                  border: isDivergent
-                    ? `0.5px solid ${C.neonRed}66`
-                    : `0.5px solid ${C.border}`,
-                  position: "relative", overflow: "hidden",
-                }}>
-                  {/* Divergence glow */}
-                  {isDivergent && (
-                    <div style={{
-                      position: "absolute", top: 0, right: 0,
-                      width: 40, height: 40, borderRadius: "0 12px 0 40px",
-                      background: C.neonRed + "20",
-                    }} />
-                  )}
-
-                  {/* Coin header */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{
-                        width: 30, height: 30, borderRadius: 15,
-                        background: COIN_COLORS[i % COIN_COLORS.length] + "20",
-                        border: `0.5px solid ${COIN_COLORS[i % COIN_COLORS.length]}55`,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 10, fontWeight: 700, color: COIN_COLORS[i % COIN_COLORS.length],
-                      }}>
-                        {row.coin.slice(0, 3)}
-                      </div>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: C.textPri }}>${row.coin}</span>
-                    </div>
-                    {isDivergent && (
-                      <NeonBadge color={C.neonRed} small>
-                        {whaleLeads ? "🐋 Whale trước" : "📉 Whale sau"}
-                      </NeonBadge>
-                    )}
-                  </div>
-
-                  {/* Fear & Greed bars: Whale vs Retail */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-                    {/* Whale bar */}
-                    <div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 10 }}>
-                        <span style={{ color: C.amber }}>🐋 Whale F&G</span>
-                        <span style={{ color: fgColor(whaleFG), fontFamily: "monospace", fontWeight: 600 }}>
-                          {fmt(whaleFG, 0)} — {fgLabel(whaleFG)}
-                        </span>
-                      </div>
-                      <div style={{ height: 6, borderRadius: 3, background: C.bgElevated, overflow: "hidden" }}>
-                        <div style={{
-                          height: "100%", borderRadius: 3,
-                          width: `${whaleFG}%`,
-                          background: `linear-gradient(90deg, ${fgColor(whaleFG)}88, ${fgColor(whaleFG)})`,
-                          transition: "width 0.6s ease",
-                        }} />
-                      </div>
-                    </div>
-
-                    {/* Retail bar */}
-                    {retailFG != null && (
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 10 }}>
-                          <span style={{ color: C.electricBl }}>🛒 Retail F&G</span>
-                          <span style={{ color: fgColor(retailFG), fontFamily: "monospace", fontWeight: 600 }}>
-                            {fmt(retailFG, 0)} — {fgLabel(retailFG)}
-                          </span>
-                        </div>
-                        <div style={{ height: 6, borderRadius: 3, background: C.bgElevated, overflow: "hidden" }}>
-                          <div style={{
-                            height: "100%", borderRadius: 3,
-                            width: `${retailFG}%`,
-                            background: `linear-gradient(90deg, ${fgColor(retailFG)}88, ${fgColor(retailFG)})`,
-                            transition: "width 0.6s ease",
-                          }} />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Divergence badge */}
-                    {isDivergent && (
-                      <div style={{
-                        fontSize: 10, color: C.neonRed, textAlign: "center",
-                        padding: "4px 0", borderTop: `0.5px solid ${C.neonRed}33`,
-                      }}>
-                        ⚠ Divergence {fmt(diff, 0)} điểm — {whaleLeads ? "Whale bullish hơn Retail" : "Retail bullish hơn Whale"}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Stats nhỏ */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                    {[
-                      { label: "Mentions", value: fmtInt(row.total_mentions), color: C.textPri },
-                      { label: "Bullish", value: `${fmt(row.avg_bullish * 100)}%`, color: C.limeGreen },
-                      { label: "Bearish", value: `${fmt(row.avg_bearish * 100)}%`, color: C.neonRed },
-                    ].map(({ label, value, color }) => (
-                      <div key={label} style={{
-                        background: C.bgElevated, borderRadius: 6, padding: "6px 8px", textAlign: "center",
-                      }}>
-                        <div style={{ fontSize: 9, color: C.textDim, marginBottom: 2 }}>{label}</div>
-                        <div style={{ fontSize: 12, fontWeight: 600, color, fontFamily: "monospace" }}>{value}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{ marginTop: 8, fontSize: 10, color: C.textDim }}>
-                    Updated {timeAgo(row.latest_at)}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-        </>
-      )}
+          ))
+        }
+      </div>
     </div>
   );
 }
