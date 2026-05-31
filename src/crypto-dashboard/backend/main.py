@@ -28,7 +28,7 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())   # tự tìm .env từ thư mục hiện tại đi lên
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://tranduonganttcole_db_user:KrHMQZxRZlRAsA3B@cluster0.rrajasg.mongodb.net/?appName=Cluster0")
 MONGO_DB  = os.getenv("MONGO_DB",  "crypto_trends")
 
 # ── Singleton MongoDB connection ─────────────────────────────────────────────
