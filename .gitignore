@@ -41,3 +41,6 @@ test_hdfs_env.py
 # --- Other ---
 .agents
 minikube-linux-amd64
+kind.exe
+*.tar
+*.jsonl

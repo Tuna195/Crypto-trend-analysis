@@ -45,13 +45,13 @@ def fetch_historical():
 
     # Hai luồng dữ liệu cần vét lịch sử (với chunk_size khác nhau để tối ưu request)
     targets = [
-        {
-            "name": "MARKET_TREND",
-            "topic": os.getenv("KAFKA_TOPIC_MARKET", "raw-tweets-market"),
-            "query": market_query,
-            "key": "Crypto",
-            "hours_per_chunk": 1
-        },
+        # {
+        #     "name": "MARKET_TREND",
+        #     "topic": os.getenv("KAFKA_TOPIC_MARKET", "raw-tweets-market"),
+        #     "query": market_query,
+        #     "key": "Crypto",
+        #     "hours_per_chunk": 1
+        # },
         {
             "name": "WHALE_SIGNAL",
             "topic": os.getenv("KAFKA_TOPIC_WHALES", "raw-tweets-whales"),

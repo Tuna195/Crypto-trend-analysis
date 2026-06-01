@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-stream-processor
+  namespace: crypto-trend
+  labels:
+    app: spark-stream-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-stream-processor
+  template:
+    metadata:
+      labels:
+        app: spark-stream-processor
+    spec:
+      containers:
+        - name: stream-processor
+          image: crypto-stream:v1
+          imagePullPolicy: Never
+          command: ["python", "src/processing/speed_layer/stream_job.py"]
+          envFrom:
+            - secretRef:
+                name: ingestion-env-secret
+          env:
+            - name: TZ
+              value: "Asia/Ho_Chi_Minh"
+            - name: KAFKA_CERTS_DIR
+              value: "/etc/kafka/certs"
+            - name: SPARK_KAFKA_PACKAGE
+              value: "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
+          volumeMounts:
+            - name: kafka-ssl-certs
+              mountPath: /etc/kafka/certs
+              readOnly: true
+            - name: appuser-home
+              mountPath: /home/appuser
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+      volumes:
+        - name: kafka-ssl-certs
+          secret:
+            secretName: kafka-ssl-secret
+        - name: appuser-home
+          emptyDir: {}
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: spark-batch-processor
+  namespace: crypto-trend
+  labels:
+    app: spark-batch-processor
+spec:
+  schedule: "0 0 * * *"
+  timeZone: "Asia/Ho_Chi_Minh"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: spark-batch-processor
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: batch-processor
+              image: crypto-batch:v1
+              imagePullPolicy: Never
+              command: ["python", "src/processing/batch_layer/batch_runner.py"]
+              envFrom:
+                - secretRef:
+                    name: ingestion-env-secret
+              env:
+                - name: TZ
+                  value: "Asia/Ho_Chi_Minh"
+              volumeMounts:
+                - name: appuser-home
+                  mountPath: /home/appuser
+              resources:
+                requests:
+                  memory: "2Gi"
+                  cpu: "1000m"
+                limits:
+                  memory: "4Gi"
+                  cpu: "2000m"
+          volumes:
+            - name: appuser-home
+              emptyDir: {}

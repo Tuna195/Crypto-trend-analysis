@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
         - name: kafka-to-hdfs
-          image: crypto-ingestion:latest
+          image: crypto-ingestion:v2
           imagePullPolicy: Never  # Kind: dùng image đã load local
           command: ["python", "src/ingestion/kafka_to_hdfs.py"]
 
