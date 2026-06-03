@@ -45,3 +45,8 @@ minikube-linux-amd64
 kind.exe
 *.tar
 *.jsonl
+
+# --- Báo cáo (không đưa vào repo) ---
+BaoCao_*.docx
+~$*.docx
+tools/

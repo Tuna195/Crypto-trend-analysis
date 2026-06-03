@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 async function apiFetch(path) {
   const res = await fetch(path);
+  if (res.status === 404) return null;   // "chưa có data" — không phải lỗi
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || `HTTP ${res.status}`);
