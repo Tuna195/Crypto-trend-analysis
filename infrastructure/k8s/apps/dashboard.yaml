@@ -1,0 +1,171 @@
+# =============================================================================
+# FILE: dashboard.yaml
+#
+# Chứa 4 object:
+#   1. Deployment  dashboard-backend   — FastAPI (src/crypto-dashboard/backend/main.py)
+#   2. Service     dashboard-backend   — ClusterIP :8000 (nội bộ cluster)
+#   3. Deployment  dashboard-frontend  — Nginx serve React build + proxy /api
+#   4. Service     dashboard-frontend  — ClusterIP :80  (nội bộ cluster)
+#
+# Yêu cầu trước khi apply:
+#   - Secret ingestion-env-secret PHẢI có MONGO_URI (Atlas). Kiểm tra:
+#       kubectl get secret ingestion-env-secret -n crypto-trend -o jsonpath='{.data.MONGO_URI}'
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNBOOK DEPLOY ĐẦY ĐỦ (PowerShell, chạy từ ROOT project)
+#
+# LƯU Ý QUAN TRỌNG: cluster này là Kind (tên "desktop") NHƯNG `kind load` KHÔNG
+# dùng được — kind CLI dò sai docker context nên báo "No kind clusters found".
+# Phải nạp image vào containerd của 2 node worker bằng `ctr import`:
+#
+#   # 1. Build 2 image
+#   docker build -t crypto-dashboard-backend:v1  -f Dockerfile.dashboard-backend  .
+#   docker build -t crypto-dashboard-frontend:v1 -f Dockerfile.dashboard-frontend .
+#
+#   # 2. Save ra tar
+#   docker save crypto-dashboard-backend:v1  -o backend.tar
+#   docker save crypto-dashboard-frontend:v1 -o frontend.tar
+#
+#   # 3. Import vào containerd của CẢ 2 worker (pod chạy ở worker, control-plane bị taint)
+#   foreach ($n in "desktop-worker","desktop-worker2") {
+#       docker cp backend.tar  "${n}:/backend.tar";  docker exec $n ctr -n k8s.io images import /backend.tar
+#       docker cp frontend.tar "${n}:/frontend.tar"; docker exec $n ctr -n k8s.io images import /frontend.tar
+#   }
+#
+#   # 4. Apply manifest
+#   kubectl apply -f infrastructure/k8s/apps/dashboard.yaml
+#
+#   # 5. Chờ pod Ready
+#   kubectl get pods -n crypto-trend -l "app in (dashboard-backend,dashboard-frontend)" -w
+#
+#   # 6. Mở dashboard (Service là ClusterIP — chỉ trong cluster, nên port-forward ra localhost)
+#   kubectl port-forward -n crypto-trend svc/dashboard-frontend 8080:80
+#   #   → trình duyệt: http://localhost:8080
+# =============================================================================
+
+---
+# ─────────────────────────────────────────────────────────────────
+# 1. BACKEND: FastAPI — đọc MongoDB Atlas, expose /api/* và /health
+# ─────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-backend
+  namespace: crypto-trend
+  labels:
+    app: dashboard-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard-backend
+  template:
+    metadata:
+      labels:
+        app: dashboard-backend
+    spec:
+      containers:
+        - name: dashboard-backend
+          image: crypto-dashboard-backend:v1
+          imagePullPolicy: Never   # Kind: dùng image đã load local
+          ports:
+            - containerPort: 8000
+          # Nạp MONGO_URI / MONGO_DB (và các biến khác) từ secret dùng chung
+          envFrom:
+            - secretRef:
+                name: ingestion-env-secret
+          env:
+            - name: TZ
+              value: "Asia/Ho_Chi_Minh"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-backend
+  namespace: crypto-trend
+  labels:
+    app: dashboard-backend
+spec:
+  selector:
+    app: dashboard-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+---
+# ─────────────────────────────────────────────────────────────────
+# 3. FRONTEND: Nginx serve React build, proxy /api → dashboard-backend
+# ─────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-frontend
+  namespace: crypto-trend
+  labels:
+    app: dashboard-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard-frontend
+  template:
+    metadata:
+      labels:
+        app: dashboard-frontend
+    spec:
+      containers:
+        - name: dashboard-frontend
+          image: crypto-dashboard-frontend:v1
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-frontend
+  namespace: crypto-trend
+  labels:
+    app: dashboard-frontend
+spec:
+  selector:
+    app: dashboard-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

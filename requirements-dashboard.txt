@@ -1,0 +1,8 @@
+# Dependencies cho Dashboard backend (FastAPI) — src/crypto-dashboard/backend/main.py
+# Giữ tối thiểu để image nhẹ (không kéo theo pyspark/streamlit như requirements.txt)
+fastapi==0.115.2
+uvicorn==0.30.6
+starlette==0.40.0
+pydantic==2.13.2
+pymongo==4.9.1
+python-dotenv==1.0.1
