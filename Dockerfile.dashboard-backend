@@ -1,0 +1,35 @@
+# =============================================================================
+# Dockerfile.dashboard-backend — Image cho Dashboard API (FastAPI)
+#
+# Build image:
+#   docker build -t crypto-dashboard-backend:v1 -f Dockerfile.dashboard-backend .
+#
+# Load vào cluster (xem runbook đầy đủ trong infrastructure/k8s/apps/dashboard.yaml):
+#   docker save crypto-dashboard-backend:v1 -o backend.tar
+#   docker cp backend.tar desktop-worker:/backend.tar  ; docker exec desktop-worker  ctr -n k8s.io images import /backend.tar
+#   docker cp backend.tar desktop-worker2:/backend.tar ; docker exec desktop-worker2 ctr -n k8s.io images import /backend.tar
+# =============================================================================
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Cài dependencies tối thiểu (tách layer để tận dụng cache)
+COPY requirements-dashboard.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-dashboard.txt
+
+# main.py là self-contained (chỉ dùng pymongo trực tiếp, không import từ src/).
+# Copy thẳng nội dung backend/ vào /app để chạy "uvicorn main:app"
+# (tránh tên thư mục "crypto-dashboard" có dấu gạch — không hợp lệ làm Python module).
+COPY src/crypto-dashboard/backend/ ./
+
+# User non-root
+RUN useradd --no-create-home --shell /bin/false appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# MONGO_URI / MONGO_DB được nạp từ Secret ingestion-env-secret (xem dashboard.yaml)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
