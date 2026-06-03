@@ -59,7 +59,7 @@ metadata:
   labels:
     app: spark-batch-processor
 spec:
-  schedule: "0 0 * * *"
+  schedule: "0 * * * *"
   timeZone: "Asia/Ho_Chi_Minh"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
