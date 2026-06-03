@@ -761,7 +761,7 @@ function PagePipeline() {
 // ═══════════════════════════════════════════════════════════════════════════════
 const TABS = [
   { id: "trending", label: "Trending", icon: "📈" },
-  { id: "whales", label: "Whales", icon: "🐋" },
+  //  { id: "whales", label: "Whales", icon: "🐋" },
   { id: "alerts", label: "Alerts", icon: "🚨" },
   { id: "pipeline", label: "Pipeline", icon: "📊" },
 ];

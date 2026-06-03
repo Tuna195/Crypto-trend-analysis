@@ -21,6 +21,7 @@ data/
 *.parquet
 *.h5
 *.pkl
+*.lock
 
 # --- IDE & OS ---
 .idea/
