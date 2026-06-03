@@ -1,0 +1,24 @@
+# ==========================================
+# THƯ VIỆN CHO GIAI ĐOẠN 2: BATCH PROCESSING
+# ==========================================
+
+# Apache Spark cho Python
+pyspark==3.5.1
+
+# Kết nối MongoDB để lưu kết quả
+pymongo==4.7.2
+
+# Đọc cấu hình từ .env
+python-dotenv==1.0.1
+
+# Xử lý ngôn ngữ tự nhiên (Phân tích cảm xúc)
+nltk==3.8.1
+
+# Thư viện dữ liệu cấu trúc
+pyarrow==15.0.2
+pandas==2.2.2
+
+# Các thư viện Storage phụ thuộc của dự án
+hdfs==2.7.3
+pydantic==2.13.2
+requests==2.32.3

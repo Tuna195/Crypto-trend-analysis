@@ -1,0 +1,35 @@
+# =============================================================================
+# Dockerfile.dashboard-frontend — Build React/Vite → serve bằng Nginx
+#
+# Build image (chạy từ ROOT project):
+#   docker build -t crypto-dashboard-frontend:v1 -f Dockerfile.dashboard-frontend .
+#
+# Load vào cluster (xem runbook đầy đủ trong infrastructure/k8s/apps/dashboard.yaml):
+#   docker save crypto-dashboard-frontend:v1 -o frontend.tar
+#   docker cp frontend.tar desktop-worker:/frontend.tar  ; docker exec desktop-worker  ctr -n k8s.io images import /frontend.tar
+#   docker cp frontend.tar desktop-worker2:/frontend.tar ; docker exec desktop-worker2 ctr -n k8s.io images import /frontend.tar
+#
+# Nginx vừa serve file tĩnh vừa reverse-proxy /api → dashboard-backend:8000
+# (cùng origin nên không dính CORS).
+# =============================================================================
+
+# ── Stage 1: Build static bằng Node ──────────────────────────────────────────
+FROM node:20-alpine AS build
+WORKDIR /build
+
+# Copy manifest trước để cache npm install
+COPY src/crypto-dashboard/package.json ./
+RUN npm install
+
+# Copy phần còn lại của frontend rồi build (Vite root = thư mục này)
+COPY src/crypto-dashboard/ ./
+RUN npm run build           # xuất ra /build/dist
+
+# ── Stage 2: Serve bằng Nginx ─────────────────────────────────────────────────
+FROM nginx:1.27-alpine
+# Cấu hình: serve SPA + proxy /api sang backend service
+COPY src/crypto-dashboard/nginx.conf /etc/nginx/conf.d/default.conf
+# Static build
+COPY --from=build /build/dist /usr/share/nginx/html
+
+EXPOSE 80

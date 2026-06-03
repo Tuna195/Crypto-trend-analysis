@@ -1,0 +1,26 @@
+# Sử dụng Python 3.11 làm nền tảng
+FROM python:3.11-slim
+
+# Cài đặt Java (JRE) vì Apache Spark chạy trên nền JVM
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends default-jre procps && \
+    rm -rf /var/lib/apt/lists/*
+
+# Thiết lập thư mục làm việc
+WORKDIR /app
+
+# Copy file requirements và cài đặt
+COPY requirements-processing.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-processing.txt
+
+# Tải sẵn bộ từ điển Vader của NLTK để dùng cho AI Sentiment
+RUN python -m nltk.downloader vader_lexicon
+
+# Copy toàn bộ source code
+COPY src/ ./src/
+
+# Tạo user không có đặc quyền root để bảo mật
+RUN useradd --no-create-home --shell /bin/false appuser && \
+    chown -R appuser:appuser /app
+USER appuser

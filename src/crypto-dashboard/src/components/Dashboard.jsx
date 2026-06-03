@@ -239,10 +239,7 @@ function SentimentChart({ coin }) {
       {coin && error && <ErrorBox message={error} />}
       {coin && !loading && !error && chartData.length === 0 && (
         <div style={{ color: C.textMuted, fontSize: 12, textAlign: "center", paddingTop: 60 }}>
-          Chưa có data cho ${coin} trong {hours}h qua.
-          <div style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>
-            Cần chạy batch_job.py để có data trong batch_sentiment_metrics.
-          </div>
+          Chưa có dữ liệu cho ${coin} trong {hours}h qua. Thử chọn khoảng thời gian khác.
         </div>
       )}
       {coin && !loading && !error && chartData.length > 0 && (
@@ -338,8 +335,7 @@ function TrendingTable({ onCoinSelect, selectedCoin }) {
       {error && <div style={{ padding: "0 22px 16px" }}><ErrorBox message={error} /></div>}
       {!loading && !error && !data?.length && (
         <div style={{ padding: "32px", textAlign: "center", color: C.textMuted, fontSize: 13 }}>
-          Chưa có data trong {hours}h qua.
-          <div style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>Cần chạy <code style={{ color: C.neonTeal }}>batch_job.py</code> để ghi dữ liệu vào MongoDB.</div>
+          Chưa có dữ liệu trong {hours}h qua. Thử chọn khoảng thời gian khác.
         </div>
       )}
       <div style={{ overflowX: "auto" }}>
@@ -660,14 +656,14 @@ function PagePipeline() {
             label: "Batch Layer", alive: batchAlive, loading: bL, color: C.electricBl,
             collections: ["batch_sentiment_metrics", "batch_trend_spikes", "alerts", "batch_job_runs"],
             cmd: "python src/processing/batch_layer/batch_job.py --demo",
-            desc: batchAlive ? "Data có sẵn trong MongoDB" : "Chưa có data — cần chạy batch_job.py",
+            desc: batchAlive ? "Data có sẵn trong MongoDB" : "Chưa có data",
             refresh: "Định kỳ (hourly/daily)"
           },
           {
             label: "Speed Layer", alive: speedAlive, loading: sL, color: C.neonTeal,
             collections: ["speed_trend_metrics", "speed_bad_records"],
             cmd: "python src/processing/speed_layer/stream_job.py --demo",
-            desc: speedAlive ? "Spark Streaming đang ghi data" : "Chưa có data — cần chạy stream_job.py",
+            desc: speedAlive ? "Spark Streaming đang ghi data" : "Chưa có data",
             refresh: "Real-time (5-phút micro-batch)"
           },
         ].map(({ label, alive, loading: ld, color, collections, cmd, desc, refresh }) => (
@@ -720,7 +716,7 @@ function PagePipeline() {
           <SectionTitle layer="batch">Lịch sử Batch Job Runs</SectionTitle>
         </div>
         {jL && <div style={{ padding: "16px 22px" }}><SkeletonBox h={12} style={{ marginBottom: 8 }} /><SkeletonBox h={12} w="80%" /></div>}
-        {!jL && !(jobs?.length) && <div style={{ padding: "16px 22px", fontSize: 12, color: C.textMuted }}>Chưa có lịch sử. Chạy batch_job.py để ghi audit log.</div>}
+        {!jL && !(jobs?.length) && <div style={{ padding: "16px 22px", fontSize: 12, color: C.textMuted }}>Chưa có lịch sử.</div>}
         {!jL && jobs?.length > 0 && (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>

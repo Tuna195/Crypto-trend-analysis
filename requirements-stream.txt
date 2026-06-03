@@ -1,0 +1,16 @@
+# ==========================================
+# THƯ VIỆN CHO GIAI ĐOẠN 2: STREAM PROCESSING
+# ==========================================
+
+# Apache Spark cho Python
+pyspark==3.5.1
+
+# Kết nối MongoDB để lưu kết quả
+pymongo==4.7.2
+
+# Đọc cấu hình từ .env
+python-dotenv==1.0.1
+
+# Thư viện dữ liệu cấu trúc (thường đi kèm PySpark/Pandas)
+pyarrow==15.0.2
+pandas==2.2.2

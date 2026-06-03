@@ -1,0 +1,15 @@
+# ==========================================
+# THƯ VIỆN CHO GIAI ĐOẠN 2: SPARK PROCESSING
+# ==========================================
+
+# Apache Spark cho Python
+pyspark==3.5.1
+
+# Xử lý ngôn ngữ tự nhiên (Phân tích cảm xúc)
+nltk==3.8.1
+
+# Kết nối MongoDB để lưu kết quả
+pymongo==4.7.2
+
+# Phụ trợ xử lý chuỗi / tính toán
+pandas==2.2.2
