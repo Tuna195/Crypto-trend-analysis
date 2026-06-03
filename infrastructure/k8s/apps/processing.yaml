@@ -19,7 +19,7 @@ spec:
         - name: stream-processor
           image: crypto-stream:v1
           imagePullPolicy: Never
-          command: ["python", "src/processing/speed_layer/stream_job.py"]
+          command: ["python", "src/processing/speed_layer/stream_job.py", "--output-sink", "mongo"]
           envFrom:
             - secretRef:
                 name: ingestion-env-secret
