@@ -649,14 +649,14 @@ function PagePipeline() {
         {[
           {
             label: "Batch Layer", alive: batchAlive, loading: bL, color: C.electricBl,
-            collections: ["batch_sentiment_metrics", "batch_trend_spikes", "alerts", "batch_job_runs"],
+            collections: [],
             //cmd: "python src/processing/batch_layer/batch_job.py --demo",
             desc: batchAlive ? "Data có sẵn trong MongoDB" : "Chưa có data",
             refresh: "Định kỳ (hourly/daily)"
           },
           {
             label: "Speed Layer", alive: speedAlive, loading: sL, color: C.neonTeal,
-            collections: ["speed_trend_metrics", "speed_bad_records"],
+            collections: [],
             //cmd: "python src/processing/speed_layer/stream_job.py --demo",
             desc: speedAlive ? "Spark Streaming đang ghi data" : "Chưa có data",
             refresh: "Real-time (5-phút micro-batch)"
