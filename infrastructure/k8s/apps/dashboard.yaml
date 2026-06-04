@@ -77,18 +77,24 @@ spec:
           env:
             - name: TZ
               value: "Asia/Ho_Chi_Minh"
+          # Readiness: /health (có ping Mongo) — nới timeout vì Atlas ở xa, chậm 1-2s là bình thường
           readinessProbe:
             httpGet:
               path: /health
               port: 8000
             initialDelaySeconds: 10
-            periodSeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          # Liveness: chỉ kiểm tra tiến trình còn sống (TCP) — KHÔNG phụ thuộc Mongo,
+          # tránh việc Atlas chậm làm probe timeout rồi giết pod (gây CrashLoopBackOff)
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
-            initialDelaySeconds: 20
-            periodSeconds: 20
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
           resources:
             requests:
               memory: "128Mi"

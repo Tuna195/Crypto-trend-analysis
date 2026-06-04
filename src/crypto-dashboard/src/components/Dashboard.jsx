@@ -1,14 +1,12 @@
 /**
  * Dashboard.jsx — CryptoTrend Frontend
  * ======================================
- * Gọi backend/main.py (FastAPI) → query MongoDB của An
- * Dữ liệu do Thắng (speed layer) và Hiệu (batch layer) ghi vào.
+ * Giao diện trực quan hóa, gọi REST API của backend (FastAPI) để truy vấn dữ liệu.
  *
  * Pages:
- *   📈 Trending  — KPI, chart, heatmap, bảng coin
- *   🐋 Whales    — so sánh whale vs retail sentiment
- *   🚨 Alerts    — alerts đầy đủ
- *   📊 Pipeline  — trạng thái batch/speed + job history
+ *   Trending  — KPI, biểu đồ cảm xúc, heatmap, bảng xếp hạng coin
+ *   Alerts    — danh sách cảnh báo
+ *   Pipeline  — trạng thái Batch/Speed Layer + lịch sử job
  */
 
 import { useState } from "react";
@@ -75,8 +73,8 @@ function NeonBadge({ children, color = C.neonTeal, small = false }) {
 
 function LayerBadge({ layer }) {
   const cfg = {
-    speed: { label: "SPEED", color: C.neonTeal, title: "Nguồn: speed_trend_metrics (Spark Streaming)" },
-    batch: { label: "BATCH", color: C.electricBl, title: "Nguồn: batch_sentiment_metrics (Spark Batch)" },
+    speed: { label: "SPEED", color: C.neonTeal, title: "Dữ liệu thời gian thực (Spark Streaming)" },
+    batch: { label: "BATCH", color: C.electricBl, title: "Dữ liệu theo lô (Spark Batch)" },
     both: { label: "BATCH+SPEED", color: C.neonPurple, title: "Kết hợp cả hai layer" },
   }[layer];
   if (!cfg) return null;
@@ -137,7 +135,7 @@ function TimeFilterBar({ value, onChange, options = [1, 6, 24, 72] }) {
 }
 
 // ─── Ticker Bar ───────────────────────────────────────────────────────────────
-// Nguồn: speed_trend_metrics (Thắng)
+// Nguồn: speed_trend_metrics
 function TickerBar() {
   const { data } = useSpeedTrends(1, 12);
   if (!data?.length) return null;
@@ -206,7 +204,7 @@ function KpiCards() {
 }
 
 // ─── Sentiment Chart ──────────────────────────────────────────────────────────
-// Nguồn: batch_sentiment_metrics (Hiệu)
+// Nguồn: batch_sentiment_metrics
 function SentimentChart({ coin }) {
   const [hours, setHours] = useState(6);
   const { data, loading, error } = useCoinSentiment(coin, hours);
@@ -317,7 +315,7 @@ function AlertsFeed() {
 }
 
 // ─── Trending Table ───────────────────────────────────────────────────────────
-// Nguồn: batch_sentiment_metrics (Hiệu)
+// Nguồn: batch_sentiment_metrics
 function TrendingTable({ onCoinSelect, selectedCoin }) {
   const [hours, setHours] = useState(24);
   const { data, loading, error } = useBatchTrends(hours, 20);
@@ -395,7 +393,7 @@ function TrendingTable({ onCoinSelect, selectedCoin }) {
 }
 
 // ─── Spikes Panel ─────────────────────────────────────────────────────────────
-// Nguồn: speed_trend_metrics với is_spike=True (Thắng)
+// Nguồn: speed_trend_metrics với is_spike=True
 function SpikesPanel() {
   const { data, loading } = useSpeedSpikes(1);
   if (loading || !data?.length) return null;
@@ -581,7 +579,7 @@ function PageAlerts() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.textPri, marginBottom: 4 }}>🚨 Alert Center</div>
-          <div style={{ fontSize: 11, color: C.textMuted }}>Nguồn: <code style={{ color: C.neonTeal }}>alerts</code> collection — spam detection + whale signals từ batch_job.py</div>
+          <div style={{ fontSize: 11, color: C.textMuted }}>Cảnh báo spam và tín hiệu bất thường được phát hiện tự động</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {[["open", "🔴 Open"], ["closed", "✅ Closed"], ["", "All"]].map(([s, l]) => (
@@ -646,7 +644,7 @@ function PagePipeline() {
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.textPri, marginBottom: 4 }}>📊 Pipeline Status</div>
-        <div style={{ fontSize: 11, color: C.textMuted }}>Trạng thái dữ liệu trong MongoDB — do An setup, Thắng và Hiệu ghi</div>
+        <div style={{ fontSize: 11, color: C.textMuted }}>Trạng thái các tầng xử lý dữ liệu (Batch & Speed Layer)</div>
       </div>
 
       {/* Layer status cards */}
@@ -655,18 +653,16 @@ function PagePipeline() {
           {
             label: "Batch Layer", alive: batchAlive, loading: bL, color: C.electricBl,
             collections: ["batch_sentiment_metrics", "batch_trend_spikes", "alerts", "batch_job_runs"],
-            cmd: "python src/processing/batch_layer/batch_job.py --demo",
-            desc: batchAlive ? "Data có sẵn trong MongoDB" : "Chưa có data",
-            refresh: "Định kỳ (hourly/daily)"
+            desc: batchAlive ? "Đang hoạt động" : "Chưa có dữ liệu",
+            refresh: "Định kỳ (mỗi giờ)"
           },
           {
             label: "Speed Layer", alive: speedAlive, loading: sL, color: C.neonTeal,
             collections: ["speed_trend_metrics", "speed_bad_records"],
-            cmd: "python src/processing/speed_layer/stream_job.py --demo",
-            desc: speedAlive ? "Spark Streaming đang ghi data" : "Chưa có data",
-            refresh: "Real-time (5-phút micro-batch)"
+            desc: speedAlive ? "Spark Streaming đang hoạt động" : "Chưa có dữ liệu",
+            refresh: "Thời gian thực (micro-batch)"
           },
-        ].map(({ label, alive, loading: ld, color, collections, cmd, desc, refresh }) => (
+        ].map(({ label, alive, loading: ld, color, collections, desc, refresh }) => (
           <Card key={label} style={{ padding: "18px 22px", border: `0.5px solid ${alive ? color + "55" : C.border}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
               <div style={{ width: 38, height: 38, borderRadius: 19, background: alive ? color + "18" : C.bgElevated, border: `0.5px solid ${alive ? color + "55" : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>
@@ -683,13 +679,7 @@ function PagePipeline() {
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
               {collections.map(c => <code key={c} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 4, background: C.bgElevated, color: C.textDim, border: `0.5px solid ${C.border}` }}>{c}</code>)}
             </div>
-            <div style={{ fontSize: 10, color: C.textDim, marginBottom: alive ? 0 : 10 }}>🔄 {refresh}</div>
-            {!alive && (
-              <div style={{ background: C.bgElevated, border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", marginTop: 8 }}>
-                <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4 }}>Lệnh khởi động:</div>
-                <code style={{ fontSize: 10, color }}>{cmd}</code>
-              </div>
-            )}
+            <div style={{ fontSize: 10, color: C.textDim }}>🔄 {refresh}</div>
           </Card>
         ))}
       </div>
@@ -757,7 +747,6 @@ function PagePipeline() {
 // ═══════════════════════════════════════════════════════════════════════════════
 const TABS = [
   { id: "trending", label: "Trending", icon: "📈" },
-  //  { id: "whales", label: "Whales", icon: "🐋" },
   { id: "alerts", label: "Alerts", icon: "🚨" },
   { id: "pipeline", label: "Pipeline", icon: "📊" },
 ];
@@ -809,7 +798,6 @@ export default function Dashboard() {
 
       <main style={{ padding: "24px 32px 56px" }}>
         {tab === "trending" && <PageTrending />}
-        {tab === "whales" && <PageWhales />}
         {tab === "alerts" && <PageAlerts />}
         {tab === "pipeline" && <PagePipeline />}
       </main>
