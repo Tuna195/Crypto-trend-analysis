@@ -3,19 +3,19 @@ MONGO_URI=
 
 # --- RAPIDAPI (Nguồn lấy dữ liệu Twitter) ---
 RAPIDAPI_KEYS=
-RAPIDAPI_HOST=
+RAPIDAPI_HOST=twitter-api45.p.rapidapi.com
 
 # --- AIVEN KAFKA (Trạm trung chuyển) ---
 KAFKA_HOST=
 KAFKA_PORT=
-KAFKA_TOPIC=
-KAFKA_TOPIC_MARKET=
-KAFKA_TOPIC_WHALES=
+KAFKA_TOPIC=raw-tweets-market
+KAFKA_TOPIC_MARKET=raw-tweets-market
+KAFKA_TOPIC_WHALES=raw-tweets-whales
 KAFKA_CERTS_DIR=
 
 # --- CẤU HÌNH THEO DÕI (Quản lý động) ---
-TRACKED_COINS=
-TRACKED_WHALES=
-HISTORICAL_DAYS_TO_FETCH=
+TRACKED_COINS=BTC,ETH,SOL,XRP,ADA,BNB,DOGE,AVAX
+TRACKED_WHALES=elonmusk,saylor,VitalikButerin,cz_binance,brian_armstrong,justinsuntron,CryptoKaleo,Pentosh1
+HISTORICAL_DAYS_TO_FETCH=180
 # --- HDFS ---
-WEBHDFS_URL=
+WEBHDFS_URL=http://localhost:9870

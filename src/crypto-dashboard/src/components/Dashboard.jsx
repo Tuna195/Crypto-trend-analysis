@@ -113,9 +113,6 @@ function ErrorBox({ message }) {
       color: C.neonRed, fontSize: 12, lineHeight: 1.5,
     }}>
       <strong>⚠ Lỗi kết nối backend:</strong> {message}
-      <div style={{ marginTop: 6, fontSize: 11, color: C.neonRed + "aa" }}>
-        Kiểm tra FastAPI đang chạy tại localhost:8000 và MongoDB đã có dữ liệu.
-      </div>
     </div>
   );
 }
@@ -581,7 +578,6 @@ function PageAlerts() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.textPri, marginBottom: 4 }}>🚨 Alert Center</div>
-          <div style={{ fontSize: 11, color: C.textMuted }}>Nguồn: <code style={{ color: C.neonTeal }}>alerts</code> collection — spam detection + whale signals từ batch_job.py</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {[["open", "🔴 Open"], ["closed", "✅ Closed"], ["", "All"]].map(([s, l]) => (
@@ -646,7 +642,6 @@ function PagePipeline() {
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.textPri, marginBottom: 4 }}>📊 Pipeline Status</div>
-        <div style={{ fontSize: 11, color: C.textMuted }}>Trạng thái dữ liệu trong MongoDB — do An setup, Thắng và Hiệu ghi</div>
       </div>
 
       {/* Layer status cards */}
@@ -655,14 +650,14 @@ function PagePipeline() {
           {
             label: "Batch Layer", alive: batchAlive, loading: bL, color: C.electricBl,
             collections: ["batch_sentiment_metrics", "batch_trend_spikes", "alerts", "batch_job_runs"],
-            cmd: "python src/processing/batch_layer/batch_job.py --demo",
+            //cmd: "python src/processing/batch_layer/batch_job.py --demo",
             desc: batchAlive ? "Data có sẵn trong MongoDB" : "Chưa có data",
             refresh: "Định kỳ (hourly/daily)"
           },
           {
             label: "Speed Layer", alive: speedAlive, loading: sL, color: C.neonTeal,
             collections: ["speed_trend_metrics", "speed_bad_records"],
-            cmd: "python src/processing/speed_layer/stream_job.py --demo",
+            //cmd: "python src/processing/speed_layer/stream_job.py --demo",
             desc: speedAlive ? "Spark Streaming đang ghi data" : "Chưa có data",
             refresh: "Real-time (5-phút micro-batch)"
           },
@@ -686,7 +681,6 @@ function PagePipeline() {
             <div style={{ fontSize: 10, color: C.textDim, marginBottom: alive ? 0 : 10 }}>🔄 {refresh}</div>
             {!alive && (
               <div style={{ background: C.bgElevated, border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", marginTop: 8 }}>
-                <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4 }}>Lệnh khởi động:</div>
                 <code style={{ fontSize: 10, color }}>{cmd}</code>
               </div>
             )}
