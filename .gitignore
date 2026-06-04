@@ -18,6 +18,7 @@ build/
 data/
 *.csv
 *.json
+!src\crypto-dashboard\package.json
 *.parquet
 *.h5
 *.pkl
@@ -31,6 +32,7 @@ data/
 # --- Kafka ---
 certs/
 *.json
+!src\crypto-dashboard\package.json
 *.log
 *.log
 
