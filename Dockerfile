@@ -18,10 +18,11 @@
 FROM python:3.11-slim
 
 # ── BƯỚC 2: Cài thư viện hệ thống (nếu cần) ──────────────────────────────────
-# procps: cung cấp lệnh "pgrep" — được dùng trong livenessProbe của kafka-to-hdfs
+# procps: cung cấp lệnh "pgrep" — được dùng trong livenessProbe
+# default-jre-headless: Java runtime để PySpark chạy trong container
 # Sau khi cài xong, xóa cache apt để giảm kích thước image
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends procps && \
+    apt-get install -y --no-install-recommends procps default-jre-headless && \
     rm -rf /var/lib/apt/lists/*
 
 # ── BƯỚC 3: Đặt thư mục làm việc bên trong container ─────────────────────────
@@ -51,8 +52,9 @@ COPY src/ ./src/
 # ── BƯỚC 7: Tạo user non-root để chạy ────────────────────────────────────────
 # Best practice bảo mật: không chạy process bằng root bên trong container
 # Tương tự việc không dùng Administrator để chạy app thông thường
-RUN useradd --no-create-home --shell /bin/false appuser && \
-    chown -R appuser:appuser /app
+RUN useradd --create-home --shell /bin/false appuser && \
+    mkdir -p /home/appuser/.ivy2.5.2/cache /home/appuser/.ivy2.5.2/jars && \
+    chown -R appuser:appuser /app /home/appuser
 USER appuser
 
 # ── GHI CHÚ: Không có CMD mặc định ───────────────────────────────────────────
@@ -63,3 +65,4 @@ USER appuser
 #   twitter_client CronJob  → command: ["python", "src/ingestion/twitter_client.py"]
 #   whale CronJob           → command: ["python", "src/ingestion/whale_client.py"]
 #   kafka-to-hdfs Deploy    → command: ["python", "src/ingestion/kafka_to_hdfs.py"]
+#   speed-layer Deploy      → command: ["python", "src/processing/speed_layer/stream_job.py", ...]
